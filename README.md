@@ -6,7 +6,8 @@ the AI SDK leaves to you:
 
 - **Free-model fallback chain.** Models are tried strongest first. If one returns a per-day 429
   (or a 404, 500 or 503) before any text has streamed, the same turn is retried on the next model.
-  A per-minute 429 only puts that model on a short cooldown.
+  A per-minute 429 only puts that model on a short cooldown, and a model that stays silent for
+  30 seconds is abandoned for the next one.
 - **Quota tracking.** Requests are counted per model per quota day (Gemini resets at midnight
   Pacific time). Models recorded as used up are skipped, and you get a summary for a badge:
   requests left, about how many questions are left, the current model, whether a fallback model is
@@ -32,7 +33,7 @@ prompt and API key. Give each app its own Google project so each gets its own fr
 ```json
 {
   "dependencies": {
-    "hoggish-assistant": "github:Jasurbek-Shomurodov/hoggish-ai-assistant#v0.3.1"
+    "hoggish-assistant": "github:Jasurbek-Shomurodov/hoggish-ai-assistant#v0.4.0"
   }
 }
 ```
@@ -72,6 +73,12 @@ geminiProvider({ apiKey: process.env.GEMINI_API_KEY });
 
 // Paid Gemini tier: plain model ids without `dailyLimit` turn quota tracking off.
 geminiProvider({ apiKey: process.env.GEMINI_API_KEY, models: ['gemini-3.8-flash'] });
+
+// Gemini thinks before every call by default, including the ones that only pick a tool, which
+// costs seconds per round. The chain defaults to `thinking: 'low'`; pick 'minimal' | 'low' |
+// 'medium' | 'high', or `false` to keep Google's default. Gemini 3 models get a thinking level,
+// Gemini 2.5 models the matching token budget.
+geminiProvider({ apiKey: process.env.GEMINI_API_KEY, thinking: 'minimal' });
 
 // Claude (defaults to claude-opus-5-5, with prompt caching on the system prompt):
 anthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -134,8 +141,13 @@ language model, such as OpenAI, Bedrock or Vertex.
   through an answer. When it does, the previous model's reasoning parts are dropped and its Gemini
   thought signatures are replaced with Google's documented `skip_thought_signature_validator`
   value.
-- A per-day 429 marks the model as used up in the quota store. 404 and 5xx errors, and per-minute
-  429s, only put the model on a cooldown on this server instance: 60 seconds, or 1 hour for a 404.
+- A per-day 429 marks the model as used up in the quota store and, on this server instance, until
+  the quota day resets, so it is not retried every request even without a store. 404 and 5xx
+  errors, and per-minute 429s, only put the model on a cooldown on this server instance: 60
+  seconds, or 1 hour for a 404.
+- A model that produces nothing within `firstTokenTimeoutMs` (default 30 000; 0 disables) is
+  abandoned, put on a 60-second cooldown and the next model is tried. Once a model has started
+  responding there is no time limit, so long answers are never cut off.
 - If the store says every model is used up, the chain is tried anyway, because the provider is the
   final authority on its own quota.
 - Once text has streamed for a model call, errors are not retried on another model. The user sees
@@ -246,7 +258,7 @@ bare imports to npm:
 // supabase/functions/assistant/deno.json
 {
   "imports": {
-    "hoggish-assistant/": "https://cdn.jsdelivr.net/gh/Jasurbek-Shomurodov/hoggish-ai-assistant@v0.3.1/dist/",
+    "hoggish-assistant/": "https://cdn.jsdelivr.net/gh/Jasurbek-Shomurodov/hoggish-ai-assistant@v0.4.0/dist/",
     "ai": "npm:ai@^7.0.141",
     "@ai-sdk/google": "npm:@ai-sdk/google@^4.0.96",
     "@ai-sdk/anthropic": "npm:@ai-sdk/anthropic@^4.0.80",
@@ -423,6 +435,8 @@ defineTool({
   confirmable tool directly with input of their choosing, within what `execute` allows.
   Confirmation does not deduplicate: make writes idempotent if double-running would hurt.
 - A turn is capped at `maxRounds` model calls (default 8), then ends with `TOO_LONG`.
+- Each model call may stay silent for `firstTokenTimeoutMs` (default 30 000) before the chain moves
+  on; see "How the fallback works".
 
 ## Quota storage
 

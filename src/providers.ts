@@ -105,6 +105,34 @@ function withContextWindow<T extends { model: string; contextWindow?: number }>(
   return contextWindow ? { ...entry, contextWindow } : entry;
 }
 
+/** How much a Gemini model may think before answering. `'minimal'` turns thinking off where the model allows it. */
+export type GeminiThinking = 'minimal' | 'low' | 'medium' | 'high';
+
+/** Default thinking effort for Gemini: enough for tool choice, without seconds of silence. */
+export const DEFAULT_GEMINI_THINKING: GeminiThinking = 'low';
+
+/** Thinking budgets (tokens) for Gemini 2.5 models, which take a budget rather than a level. */
+const GEMINI_THINKING_BUDGETS: Record<GeminiThinking, number> = { minimal: 0, low: 1_024, medium: 8_192, high: 24_576 };
+
+/**
+ * Provider options that set a Gemini model's thinking effort. Gemini 3 models
+ * take a level; Gemini 2.5 models take a token budget. Thinking is on by
+ * default and runs before every call, including the ones that only pick a
+ * tool, so a low setting removes several seconds from each round.
+ */
+export function geminiThinkingOptions(model: string, thinking: GeminiThinking): ProviderOptions {
+  const id = model.slice(model.lastIndexOf('/') + 1);
+  const thinkingConfig = id.startsWith('gemini-2.') ? { thinkingBudget: GEMINI_THINKING_BUDGETS[thinking] } : { thinkingLevel: thinking };
+  return { google: { thinkingConfig } };
+}
+
+function withGeminiThinking(model: string, thinking: GeminiThinking | false, options: ProviderOptions | undefined): ProviderOptions | undefined {
+  if (thinking === false) return options;
+  const defaults = geminiThinkingOptions(model, thinking);
+  // The caller's own thinkingConfig wins.
+  return { ...options, google: { ...defaults.google, ...options?.google } };
+}
+
 export interface GeminiProviderOptions {
   apiKey: string | undefined;
   /**
@@ -117,15 +145,26 @@ export interface GeminiProviderOptions {
   maxRetries?: number;
   maxOutputTokens?: number;
   providerOptions?: ProviderOptions;
+  /**
+   * Thinking effort for every model in the chain. Default `'low'`; `false`
+   * leaves Google's default (full thinking) in place. A `thinkingConfig` in
+   * `providerOptions.google` overrides this.
+   */
+  thinking?: GeminiThinking | false;
 }
 
 export function geminiProvider(options: GeminiProviderOptions): AssistantProvider {
   const google = createGoogleGenerativeAI({ apiKey: options.apiKey ?? '', baseURL: options.baseURL });
   const models = normalizeModels(options.models ?? GEMINI_FREE_MODELS);
+  const thinking = options.thinking ?? DEFAULT_GEMINI_THINKING;
   return {
     name: 'gemini',
     configured: Boolean(options.apiKey),
-    models: models.map((entry) => withContextWindow({ ...entry, languageModel: google(entry.model) })),
+    models: models.map((entry) => withContextWindow({
+      ...entry,
+      languageModel: google(entry.model),
+      providerOptions: withGeminiThinking(entry.model, thinking, options.providerOptions),
+    })),
     quotaTimeZone: options.quotaTimeZone ?? PACIFIC_TIME_ZONE,
     maxRetries: options.maxRetries ?? (models.length > 1 ? 0 : 2),
     maxOutputTokens: options.maxOutputTokens,

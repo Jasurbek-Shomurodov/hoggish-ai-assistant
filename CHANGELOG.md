@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0
+
+Latency fixes for the free Gemini chain.
+
+- Gemini models default to `thinking: 'low'` (`geminiProvider` option; `'minimal' | 'low' |
+  'medium' | 'high' | false`). Thinking was on in full for every call, including the rounds that
+  only pick a tool, which cost seconds of silence per round. Gemini 3 models get a `thinkingLevel`,
+  Gemini 2.5 models the matching `thinkingBudget`; a `thinkingConfig` in `providerOptions.google`
+  still wins. `geminiThinkingOptions` and `DEFAULT_GEMINI_THINKING` are exported.
+- A model rejected for its daily quota now stays skipped on this server instance until the quota
+  day resets (it was retried after 60 seconds, so every request on a warm instance paid for a
+  failing call to each used-up model, and every request without a quota store did too).
+  `Cooldowns.set` takes an optional end time and never shortens an existing cooldown.
+- New `firstTokenTimeoutMs` handler option (default 30 000; 0 disables): a model call that
+  produces nothing in that time is abandoned with a `ModelTimeoutError`, the model gets a
+  60-second cooldown and the next model is tried. Once a model has started responding there is
+  no limit. Previously a hung connection waited until the platform killed the request.
+- The chat handler reads the quota store in parallel with the app's `system`, `context` and
+  `tools` callbacks instead of after them, and the usage endpoint reads it once instead of twice.
+
 ## 0.3.1
 
 - `useAssistantChat` keeps the previous `quota` and `model` while the usage endpoint reloads for a

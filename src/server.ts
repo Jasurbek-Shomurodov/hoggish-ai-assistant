@@ -17,11 +17,13 @@ export {
 export {
   CONTEXT_WINDOWS,
   DEFAULT_CLAUDE_MODEL,
+  DEFAULT_GEMINI_THINKING,
   GEMINI_FREE_MODELS,
   anthropicProvider,
   contextWindowFor,
   customProvider,
   geminiProvider,
+  geminiThinkingOptions,
   providerChain,
   providerFromEnv,
   type AnthropicProviderOptions,
@@ -33,6 +35,7 @@ export {
   type CustomProviderOptions,
   type EnvSource,
   type GeminiProviderOptions,
+  type GeminiThinking,
   type ModelInput,
   type ProviderOptions,
 } from './providers';
@@ -49,10 +52,11 @@ export {
   COOLDOWN_MS,
   ChainExhaustedError,
   Cooldowns,
+  ModelTimeoutError,
   fallbackReason,
   isDailyQuotaError,
   modelsToTry,
   type FallbackReason,
 } from './fallback';
-export { FOREIGN_THOUGHT_SIGNATURE, MAX_ROUNDS, runTurn, type TurnOptions } from './loop';
+export { FIRST_TOKEN_TIMEOUT_MS, FOREIGN_THOUGHT_SIGNATURE, MAX_ROUNDS, runTurn, type TurnOptions } from './loop';
 export { CONFIRMATION_TTL_MS, signConfirmation, verifyConfirmation } from './confirm';

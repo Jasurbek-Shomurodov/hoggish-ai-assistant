@@ -125,6 +125,31 @@ describe('providerFromEnv with a priority list', () => {
   });
 });
 
+describe('Gemini thinking', () => {
+  it('defaults every model to low thinking, by level for Gemini 3 and by budget for Gemini 2.5', () => {
+    const provider = geminiProvider({ apiKey: 'k' });
+    const options = (id: string) => provider.models.find((model) => model.model === id)!.providerOptions;
+    expect(options('gemini-3.8-flash')).toEqual({ google: { thinkingConfig: { thinkingLevel: 'low' } } });
+    expect(options('gemini-2.5-flash')).toEqual({ google: { thinkingConfig: { thinkingBudget: 1_024 } } });
+  });
+
+  it('lets the caller pick a level, keep their own thinkingConfig, or leave thinking alone', () => {
+    const minimal = geminiProvider({ apiKey: 'k', models: ['gemini-2.5-flash'], thinking: 'minimal', providerOptions: { google: { safetySettings: [] } } });
+    expect(minimal.models[0]!.providerOptions).toEqual({ google: { safetySettings: [], thinkingConfig: { thinkingBudget: 0 } } });
+
+    const own = geminiProvider({ apiKey: 'k', models: ['gemini-3.8-flash'], providerOptions: { google: { thinkingConfig: { thinkingLevel: 'high' } } } });
+    expect(own.models[0]!.providerOptions).toEqual({ google: { thinkingConfig: { thinkingLevel: 'high' } } });
+
+    const off = geminiProvider({ apiKey: 'k', models: ['gemini-3.8-flash'], thinking: false });
+    expect(off.models[0]!.providerOptions).toBeUndefined();
+  });
+
+  it('reaches the model call through a providerChain', () => {
+    const chain = providerChain([geminiProvider({ apiKey: 'k', models: ['gemini-3.8-flash'] })]);
+    expect(modelSettings(chain, chain.models[0]!).providerOptions).toEqual({ google: { thinkingConfig: { thinkingLevel: 'low' } } });
+  });
+});
+
 describe('context windows', () => {
   it('knows Gemini and Claude windows and leaves unknown models alone', () => {
     expect(contextWindowFor('gemini-3.8-flash')).toBe(1_048_576);

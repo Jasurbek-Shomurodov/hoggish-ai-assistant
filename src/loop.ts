@@ -9,9 +9,9 @@ import {
 } from 'ai';
 import { signConfirmation } from './confirm';
 import type { AssistantEvent } from './events';
-import { ChainExhaustedError, Cooldowns, fallbackReason, modelsToTry } from './fallback';
+import { ChainExhaustedError, Cooldowns, ModelTimeoutError, fallbackReason, modelsToTry } from './fallback';
 import { modelSettings, type AssistantProvider, type ChainModel } from './providers';
-import type { RequestResult } from './quota';
+import { nextQuotaReset, type RequestResult } from './quota';
 import type { ChatMessage, ConfirmedCall } from './request';
 import {
   executeTool,
@@ -24,6 +24,12 @@ import {
 
 /** Model calls per question; each tool round is one call. */
 export const MAX_ROUNDS = 8;
+
+/**
+ * How long a model call may stay silent before the turn moves to the next
+ * model. Once a model has started responding there is no limit.
+ */
+export const FIRST_TOKEN_TIMEOUT_MS = 30_000;
 
 /**
  * Google documents this value for function-call parts the current model did
@@ -43,6 +49,8 @@ export interface TurnOptions {
   send: (event: AssistantEvent) => void;
   signal: AbortSignal;
   maxRounds?: number;
+  /** Silence allowed before a model call is abandoned for the next model. Default 30 000 ms; 0 disables. */
+  firstTokenTimeoutMs?: number;
   /** Models recorded as out of daily quota. */
   skipModels?: Iterable<string>;
   cooldowns: Cooldowns;
@@ -141,6 +149,37 @@ class AbortedError extends Error {
   }
 }
 
+/**
+ * A signal for one model call: it fires when the request is aborted or when
+ * `timeoutMs` passes before `stop()` is called (the first response part).
+ */
+function callSignal(parent: AbortSignal, timeoutMs: number): { signal: AbortSignal; timedOut: () => boolean; stop: () => void; dispose: () => void } {
+  const controller = new AbortController();
+  let timedOut = false;
+  const onAbort = () => controller.abort(parent.reason);
+  if (parent.aborted) onAbort();
+  else parent.addEventListener('abort', onAbort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined = timeoutMs > 0
+    ? setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs)
+    : undefined;
+  const stop = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    stop,
+    dispose: () => {
+      stop();
+      parent.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
 const RESPONSE_PARTS = new Set(['text-delta', 'text-start', 'reasoning-start', 'reasoning-delta', 'tool-input-start', 'tool-call', 'finish-step']);
 
 /**
@@ -151,6 +190,7 @@ const RESPONSE_PARTS = new Set(['text-delta', 'text-start', 'reasoning-start', '
 export async function runTurn(options: TurnOptions): Promise<void> {
   const { provider, send, signal, tools, cooldowns } = options;
   const maxRounds = options.maxRounds ?? MAX_ROUNDS;
+  const firstTokenTimeoutMs = options.firstTokenTimeoutMs ?? FIRST_TOKEN_TIMEOUT_MS;
   const skip = new Set(options.skipModels ?? []);
   const toolSet = sdkTools(tools);
   const systemFor = (entry: ChainModel) => instructions(modelSettings(provider, entry).cacheSystemPrompt, options.system, options.context);
@@ -203,6 +243,7 @@ export async function runTurn(options: TurnOptions): Promise<void> {
       let roundText = false;
       let accepted = false;
       const settings = modelSettings(provider, entry);
+      const call = callSignal(signal, firstTokenTimeoutMs);
       try {
         const result = streamText({
           model: entry.languageModel,
@@ -212,7 +253,7 @@ export async function runTurn(options: TurnOptions): Promise<void> {
           maxRetries: provider.maxRetries,
           ...(settings.maxOutputTokens ? { maxOutputTokens: settings.maxOutputTokens } : {}),
           ...(settings.providerOptions ? { providerOptions: settings.providerOptions as never } : {}),
-          abortSignal: signal,
+          abortSignal: call.signal,
           // The AI SDK's default logs the whole error, whose requestBodyValues
           // hold the prompt, history and tool results. Errors still reach the
           // stream below and the handler's content-free `onError`.
@@ -223,6 +264,7 @@ export async function runTurn(options: TurnOptions): Promise<void> {
         for await (const part of result.stream) {
           if (!accepted && RESPONSE_PARTS.has(part.type)) {
             accepted = true;
+            call.stop();
             options.onModelRequest?.(entry.model, 'ok');
             send({
               type: 'model',
@@ -249,26 +291,30 @@ export async function runTurn(options: TurnOptions): Promise<void> {
               }
               break;
             case 'error':
-              throw part.error;
+              throw call.timedOut() ? new ModelTimeoutError(entry.model, firstTokenTimeoutMs) : part.error;
             case 'abort':
-              throw new AbortedError();
+              throw call.timedOut() ? new ModelTimeoutError(entry.model, firstTokenTimeoutMs) : new AbortedError();
             default:
               break;
           }
         }
         if (signal.aborted) throw new AbortedError();
+        if (call.timedOut()) throw new ModelTimeoutError(entry.model, firstTokenTimeoutMs);
         const responseMessages = await result.responseMessages;
         return { model: entry.model, calls, finishReason, roundText, responseMessages };
       } catch (error) {
         if (signal.aborted) throw error;
-        const reason = fallbackReason(error);
+        const reason = call.timedOut() && !roundText ? 'unavailable' : fallbackReason(error);
         if (reason === null || roundText) throw error;
-        cooldowns.set(entry.model, reason);
+        // A used-up daily quota stays used up until the quota day resets.
+        cooldowns.set(entry.model, reason, reason === 'daily' ? nextQuotaReset(new Date(), provider.quotaTimeZone).getTime() : undefined);
         if (reason === 'daily') {
           skip.add(entry.model);
           options.onModelRequest?.(entry.model, 'daily_limit');
         }
-        errors.push(error);
+        errors.push(call.timedOut() ? new ModelTimeoutError(entry.model, firstTokenTimeoutMs) : error);
+      } finally {
+        call.dispose();
       }
     }
     throw new ChainExhaustedError(errors);

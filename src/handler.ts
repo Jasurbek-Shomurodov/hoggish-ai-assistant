@@ -3,7 +3,7 @@ import { ERROR_STATUS, encodeEvent, type AssistantErrorCode, type AssistantEvent
 import { ChainExhaustedError, Cooldowns, fallbackReason, modelsToTry, statusCode } from './fallback';
 import { MAX_ROUNDS, runTurn } from './loop';
 import type { AssistantProvider } from './providers';
-import { exhaustedModels, quotaDate, summarizeQuota, trackedModels, type QuotaStore, type QuotaSummary, type RequestResult } from './quota';
+import { exhaustedModels, quotaDate, summarizeQuota, trackedModels, type ModelUsageRow, type QuotaStore, type QuotaSummary, type RequestResult } from './quota';
 import { DEFAULT_LIMITS, parseChatRequest, type ConfirmedCall, type RequestLimits } from './request';
 import { validateToolInput, type AssistantTools } from './tools';
 
@@ -44,6 +44,11 @@ export interface AssistantHandlerOptions<CTX> {
   quotaStore?: QuotaStore;
   /** Model calls per question. Default 8. */
   maxRounds?: number;
+  /**
+   * How long a model may stay silent before the call is abandoned and the
+   * next model in the chain is tried. Default 30 000 ms; 0 disables.
+   */
+  firstTokenTimeoutMs?: number;
   limits?: Partial<RequestLimits>;
   /** Signs confirmation proposals so only calls the server proposed can run. Recommended. */
   confirmationSecret?: string;
@@ -137,10 +142,7 @@ export function createAssistantHandler<CTX>(options: AssistantHandlerOptions<CTX
     }
   }
 
-  async function quota(provider: AssistantProvider): Promise<QuotaSummary | null> {
-    if (!provider.configured) return null;
-    const now = new Date();
-    const rows = await loadQuota(provider, quotaDate(now, provider.quotaTimeZone));
+  function summarize(provider: AssistantProvider, rows: ModelUsageRow[] | null, now: Date): QuotaSummary | null {
     if (!rows) return null;
     return summarizeQuota(provider.models, rows, now, {
       timeZone: provider.quotaTimeZone,
@@ -148,10 +150,15 @@ export function createAssistantHandler<CTX>(options: AssistantHandlerOptions<CTX
     });
   }
 
-  /** The model the next question would go to: first in the chain that is neither used up nor cooling down. */
-  async function nextModel(provider: AssistantProvider): Promise<ModelInfo | null> {
+  async function quota(provider: AssistantProvider): Promise<QuotaSummary | null> {
     if (!provider.configured) return null;
-    const rows = await loadQuota(provider, quotaDate(new Date(), provider.quotaTimeZone));
+    const now = new Date();
+    return summarize(provider, await loadQuota(provider, quotaDate(now, provider.quotaTimeZone)), now);
+  }
+
+  /** The model the next question would go to: first in the chain that is neither used up nor cooling down. */
+  function nextModel(provider: AssistantProvider, rows: ModelUsageRow[] | null): ModelInfo | null {
+    if (!provider.configured) return null;
     const skip = rows ? exhaustedModels(provider.models, rows) : [];
     const entry = modelsToTry(provider.models, new Set(skip), cooldowns)[0];
     if (!entry) return null;
@@ -187,13 +194,18 @@ export function createAssistantHandler<CTX>(options: AssistantHandlerOptions<CTX
     let system: string;
     let context: string | undefined;
     let tools: AssistantTools;
+    let day: string;
+    let rows: ModelUsageRow[] | null;
     try {
       provider = await resolveProvider(ctx);
       if (!provider.configured || provider.models.length === 0) return errorResponse('NOT_CONFIGURED');
-      [system, context, tools] = await Promise.all([
+      day = quotaDate(new Date(), provider.quotaTimeZone);
+      // The app's callbacks and the quota read are independent round trips; run them together.
+      [system, context, tools, rows] = await Promise.all([
         typeof options.system === 'function' ? options.system(ctx) : options.system,
         options.context?.(ctx),
         options.tools?.(ctx) ?? {},
+        loadQuota(provider, day),
       ]);
     } catch (error) {
       if (error instanceof AssistantError) return errorResponse(error.code);
@@ -208,8 +220,6 @@ export function createAssistantHandler<CTX>(options: AssistantHandlerOptions<CTX
       confirmed = checked;
     }
 
-    const day = quotaDate(new Date(), provider.quotaTimeZone);
-    const rows = await loadQuota(provider, day);
     const store = rows ? options.quotaStore : undefined;
     const pending: Promise<unknown>[] = [];
     const record = (model: string, result: RequestResult) => {
@@ -239,6 +249,7 @@ export function createAssistantHandler<CTX>(options: AssistantHandlerOptions<CTX
             send,
             signal: request.signal,
             maxRounds: options.maxRounds ?? MAX_ROUNDS,
+            firstTokenTimeoutMs: options.firstTokenTimeoutMs,
             skipModels: rows ? exhaustedModels(provider.models, rows) : undefined,
             cooldowns,
             onModelRequest: record,
@@ -287,7 +298,10 @@ export function createAssistantHandler<CTX>(options: AssistantHandlerOptions<CTX
     if (!access.ok) return access.response;
     try {
       const provider = await resolveProvider(access.ctx);
-      const body: UsageResponse = { provider: provider.name, model: await nextModel(provider), quota: await quota(provider) };
+      const now = new Date();
+      // One quota read serves both the next model and the summary.
+      const rows = provider.configured ? await loadQuota(provider, quotaDate(now, provider.quotaTimeZone)) : null;
+      const body: UsageResponse = { provider: provider.name, model: nextModel(provider, rows), quota: summarize(provider, rows, now) };
       return json(body);
     } catch (error) {
       onError(error, { stage: 'quota' });

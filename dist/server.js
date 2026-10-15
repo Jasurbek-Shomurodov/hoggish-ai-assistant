@@ -1,4 +1,4 @@
-import { PACIFIC_TIME_ZONE, DEFAULT_LIMITS, quotaDate, summarizeQuota, parseChatRequest, exhaustedModels, trackedModels, encodeEvent, ERROR_STATUS } from './chunk-2WTQ3SDZ.js';
+import { PACIFIC_TIME_ZONE, DEFAULT_LIMITS, quotaDate, parseChatRequest, exhaustedModels, nextQuotaReset, trackedModels, encodeEvent, summarizeQuota, ERROR_STATUS } from './chunk-2WTQ3SDZ.js';
 export { ASSISTANT_ERROR_CODES, DEFAULT_LIMITS, ERROR_STATUS, PACIFIC_TIME_ZONE, REQUESTS_PER_QUESTION, createMemoryQuotaStore, encodeEvent, estimateTokens, exhaustedModels, isAssistantErrorCode, nextQuotaReset, parseChatRequest, parseEventChunk, quotaDate, readEventStream, summarizeQuota, trackedModels, trimHistory } from './chunk-2WTQ3SDZ.js';
 import { streamText, APICallError, tool, asSchema, RetryError } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -52,10 +52,20 @@ async function verifyConfirmation(secret, token, payload, now = Date.now()) {
   return crypto.subtle.verify("HMAC", await hmacKey(secret), signature, message(issuedAt, payload));
 }
 var COOLDOWN_MS = {
-  daily: 6e4,
+  daily: 60 * 6e4,
   rate: 6e4,
   missing: 60 * 6e4,
   unavailable: 6e4
+};
+var ModelTimeoutError = class extends Error {
+  constructor(model, timeoutMs) {
+    super(`No response from ${model} within ${timeoutMs} ms`);
+    this.model = model;
+    this.timeoutMs = timeoutMs;
+    this.name = "ModelTimeoutError";
+  }
+  model;
+  timeoutMs;
 };
 function rootError(error) {
   return RetryError.isInstance(error) ? error.lastError ?? error : error;
@@ -77,6 +87,7 @@ function errorText(error) {
   return parts.join("\n");
 }
 function fallbackReason(error) {
+  if (error instanceof ModelTimeoutError) return "unavailable";
   const status = statusCode(error);
   if (status === 429) return isDailyQuotaError(errorText(error)) ? "daily" : "rate";
   if (status === 404) return "missing";
@@ -89,8 +100,9 @@ var Cooldowns = class {
   }
   clock;
   until = /* @__PURE__ */ new Map();
-  set(model, reason) {
-    this.until.set(model, this.clock() + COOLDOWN_MS[reason]);
+  /** Skips `model` until `until` (epoch ms), or for the reason's default duration. */
+  set(model, reason, until) {
+    this.until.set(model, Math.max(this.until.get(model) ?? 0, until ?? this.clock() + COOLDOWN_MS[reason]));
   }
   isCooling(model) {
     return (this.until.get(model) ?? 0) > this.clock();
@@ -153,13 +165,30 @@ function withContextWindow(entry) {
   const contextWindow = entry.contextWindow ?? contextWindowFor(entry.model);
   return contextWindow ? { ...entry, contextWindow } : entry;
 }
+var DEFAULT_GEMINI_THINKING = "low";
+var GEMINI_THINKING_BUDGETS = { minimal: 0, low: 1024, medium: 8192, high: 24576 };
+function geminiThinkingOptions(model, thinking) {
+  const id = model.slice(model.lastIndexOf("/") + 1);
+  const thinkingConfig = id.startsWith("gemini-2.") ? { thinkingBudget: GEMINI_THINKING_BUDGETS[thinking] } : { thinkingLevel: thinking };
+  return { google: { thinkingConfig } };
+}
+function withGeminiThinking(model, thinking, options) {
+  if (thinking === false) return options;
+  const defaults = geminiThinkingOptions(model, thinking);
+  return { ...options, google: { ...defaults.google, ...options?.google } };
+}
 function geminiProvider(options) {
   const google = createGoogleGenerativeAI({ apiKey: options.apiKey ?? "", baseURL: options.baseURL });
   const models = normalizeModels(options.models ?? GEMINI_FREE_MODELS);
+  const thinking = options.thinking ?? DEFAULT_GEMINI_THINKING;
   return {
     name: "gemini",
     configured: Boolean(options.apiKey),
-    models: models.map((entry) => withContextWindow({ ...entry, languageModel: google(entry.model) })),
+    models: models.map((entry) => withContextWindow({
+      ...entry,
+      languageModel: google(entry.model),
+      providerOptions: withGeminiThinking(entry.model, thinking, options.providerOptions)
+    })),
     quotaTimeZone: options.quotaTimeZone ?? PACIFIC_TIME_ZONE,
     maxRetries: options.maxRetries ?? (models.length > 1 ? 0 : 2),
     maxOutputTokens: options.maxOutputTokens,
@@ -264,6 +293,7 @@ function toBase64(data) {
 
 // src/loop.ts
 var MAX_ROUNDS = 8;
+var FIRST_TOKEN_TIMEOUT_MS = 3e4;
 var FOREIGN_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
 function withoutGoogleSignature(options, replacement) {
   if (!options?.google || !("thoughtSignature" in options.google)) {
@@ -323,10 +353,35 @@ var AbortedError = class extends Error {
     this.name = "AbortError";
   }
 };
+function callSignal(parent, timeoutMs) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const onAbort = () => controller.abort(parent.reason);
+  if (parent.aborted) onAbort();
+  else parent.addEventListener("abort", onAbort, { once: true });
+  let timer = timeoutMs > 0 ? setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs) : void 0;
+  const stop = () => {
+    if (timer !== void 0) clearTimeout(timer);
+    timer = void 0;
+  };
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    stop,
+    dispose: () => {
+      stop();
+      parent.removeEventListener("abort", onAbort);
+    }
+  };
+}
 var RESPONSE_PARTS = /* @__PURE__ */ new Set(["text-delta", "text-start", "reasoning-start", "reasoning-delta", "tool-input-start", "tool-call", "finish-step"]);
 async function runTurn(options) {
   const { provider, send, signal, tools, cooldowns } = options;
   const maxRounds = options.maxRounds ?? MAX_ROUNDS;
+  const firstTokenTimeoutMs = options.firstTokenTimeoutMs ?? FIRST_TOKEN_TIMEOUT_MS;
   const skip = new Set(options.skipModels ?? []);
   const toolSet = sdkTools(tools);
   const systemFor = (entry) => instructions(modelSettings(provider, entry).cacheSystemPrompt, options.system, options.context);
@@ -374,6 +429,7 @@ async function runTurn(options) {
       let roundText = false;
       let accepted = false;
       const settings = modelSettings(provider, entry);
+      const call = callSignal(signal, firstTokenTimeoutMs);
       try {
         const result = streamText({
           model: entry.languageModel,
@@ -383,7 +439,7 @@ async function runTurn(options) {
           maxRetries: provider.maxRetries,
           ...settings.maxOutputTokens ? { maxOutputTokens: settings.maxOutputTokens } : {},
           ...settings.providerOptions ? { providerOptions: settings.providerOptions } : {},
-          abortSignal: signal,
+          abortSignal: call.signal,
           // The AI SDK's default logs the whole error, whose requestBodyValues
           // hold the prompt, history and tool results. Errors still reach the
           // stream below and the handler's content-free `onError`.
@@ -395,6 +451,7 @@ async function runTurn(options) {
         for await (const part of result.stream) {
           if (!accepted && RESPONSE_PARTS.has(part.type)) {
             accepted = true;
+            call.stop();
             options.onModelRequest?.(entry.model, "ok");
             send({
               type: "model",
@@ -422,26 +479,29 @@ ${part.text}` : part.text });
               }
               break;
             case "error":
-              throw part.error;
+              throw call.timedOut() ? new ModelTimeoutError(entry.model, firstTokenTimeoutMs) : part.error;
             case "abort":
-              throw new AbortedError();
+              throw call.timedOut() ? new ModelTimeoutError(entry.model, firstTokenTimeoutMs) : new AbortedError();
             default:
               break;
           }
         }
         if (signal.aborted) throw new AbortedError();
+        if (call.timedOut()) throw new ModelTimeoutError(entry.model, firstTokenTimeoutMs);
         const responseMessages = await result.responseMessages;
         return { model: entry.model, calls, finishReason, roundText, responseMessages };
       } catch (error) {
         if (signal.aborted) throw error;
-        const reason = fallbackReason(error);
+        const reason = call.timedOut() && !roundText ? "unavailable" : fallbackReason(error);
         if (reason === null || roundText) throw error;
-        cooldowns.set(entry.model, reason);
+        cooldowns.set(entry.model, reason, reason === "daily" ? nextQuotaReset(/* @__PURE__ */ new Date(), provider.quotaTimeZone).getTime() : void 0);
         if (reason === "daily") {
           skip.add(entry.model);
           options.onModelRequest?.(entry.model, "daily_limit");
         }
-        errors.push(error);
+        errors.push(call.timedOut() ? new ModelTimeoutError(entry.model, firstTokenTimeoutMs) : error);
+      } finally {
+        call.dispose();
       }
     }
     throw new ChainExhaustedError(errors);
@@ -549,19 +609,20 @@ function createAssistantHandler(options) {
       return null;
     }
   }
-  async function quota(provider) {
-    if (!provider.configured) return null;
-    const now = /* @__PURE__ */ new Date();
-    const rows = await loadQuota(provider, quotaDate(now, provider.quotaTimeZone));
+  function summarize(provider, rows, now) {
     if (!rows) return null;
     return summarizeQuota(provider.models, rows, now, {
       timeZone: provider.quotaTimeZone,
       requestsPerQuestion: options.requestsPerQuestion
     });
   }
-  async function nextModel(provider) {
+  async function quota(provider) {
     if (!provider.configured) return null;
-    const rows = await loadQuota(provider, quotaDate(/* @__PURE__ */ new Date(), provider.quotaTimeZone));
+    const now = /* @__PURE__ */ new Date();
+    return summarize(provider, await loadQuota(provider, quotaDate(now, provider.quotaTimeZone)), now);
+  }
+  function nextModel(provider, rows) {
+    if (!provider.configured) return null;
     const skip = rows ? exhaustedModels(provider.models, rows) : [];
     const entry = modelsToTry(provider.models, new Set(skip), cooldowns)[0];
     if (!entry) return null;
@@ -594,13 +655,17 @@ function createAssistantHandler(options) {
     let system;
     let context;
     let tools;
+    let day;
+    let rows;
     try {
       provider = await resolveProvider(ctx);
       if (!provider.configured || provider.models.length === 0) return errorResponse("NOT_CONFIGURED");
-      [system, context, tools] = await Promise.all([
+      day = quotaDate(/* @__PURE__ */ new Date(), provider.quotaTimeZone);
+      [system, context, tools, rows] = await Promise.all([
         typeof options.system === "function" ? options.system(ctx) : options.system,
         options.context?.(ctx),
-        options.tools?.(ctx) ?? {}
+        options.tools?.(ctx) ?? {},
+        loadQuota(provider, day)
       ]);
     } catch (error) {
       if (error instanceof AssistantError) return errorResponse(error.code);
@@ -613,8 +678,6 @@ function createAssistantHandler(options) {
       if (typeof checked === "string") return errorResponse(checked);
       confirmed = checked;
     }
-    const day = quotaDate(/* @__PURE__ */ new Date(), provider.quotaTimeZone);
-    const rows = await loadQuota(provider, day);
     const store = rows ? options.quotaStore : void 0;
     const pending = [];
     const record = (model, result) => {
@@ -640,6 +703,7 @@ function createAssistantHandler(options) {
             send,
             signal: request.signal,
             maxRounds: options.maxRounds ?? MAX_ROUNDS,
+            firstTokenTimeoutMs: options.firstTokenTimeoutMs,
             skipModels: rows ? exhaustedModels(provider.models, rows) : void 0,
             cooldowns,
             onModelRequest: record,
@@ -685,7 +749,9 @@ function createAssistantHandler(options) {
     if (!access.ok) return access.response;
     try {
       const provider = await resolveProvider(access.ctx);
-      const body = { provider: provider.name, model: await nextModel(provider), quota: await quota(provider) };
+      const now = /* @__PURE__ */ new Date();
+      const rows = provider.configured ? await loadQuota(provider, quotaDate(now, provider.quotaTimeZone)) : null;
+      const body = { provider: provider.name, model: nextModel(provider, rows), quota: summarize(provider, rows, now) };
       return json(body);
     } catch (error) {
       onError(error, { stage: "quota" });
@@ -711,6 +777,6 @@ function createAssistantHandler(options) {
   };
 }
 
-export { AssistantError, CONFIRMATION_TTL_MS, CONTEXT_WINDOWS, COOLDOWN_MS, ChainExhaustedError, Cooldowns, DEFAULT_CLAUDE_MODEL, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, ToolError, anthropicProvider, contextWindowFor, createAssistantHandler, customProvider, defineTool, errorCode, fallbackReason, geminiProvider, isDailyQuotaError, modelsToTry, providerChain, providerFromEnv, runTurn, signConfirmation, toBase64, verifyConfirmation };
+export { AssistantError, CONFIRMATION_TTL_MS, CONTEXT_WINDOWS, COOLDOWN_MS, ChainExhaustedError, Cooldowns, DEFAULT_CLAUDE_MODEL, DEFAULT_GEMINI_THINKING, FIRST_TOKEN_TIMEOUT_MS, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, ModelTimeoutError, ToolError, anthropicProvider, contextWindowFor, createAssistantHandler, customProvider, defineTool, errorCode, fallbackReason, geminiProvider, geminiThinkingOptions, isDailyQuotaError, modelsToTry, providerChain, providerFromEnv, runTurn, signConfirmation, toBase64, verifyConfirmation };
 //# sourceMappingURL=server.js.map
 //# sourceMappingURL=server.js.map

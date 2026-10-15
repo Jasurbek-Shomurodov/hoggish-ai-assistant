@@ -9,13 +9,25 @@ import { APICallError, RetryError } from 'ai';
  */
 export type FallbackReason = 'daily' | 'rate' | 'missing' | 'unavailable';
 
-/** How long this server instance skips a model after each kind of failure. */
+/**
+ * How long this server instance skips a model after each kind of failure.
+ * A daily quota lasts until the quota day resets; callers pass that instant
+ * to `Cooldowns.set`, and this value is only the fallback when they do not.
+ */
 export const COOLDOWN_MS: Record<FallbackReason, number> = {
-  daily: 60_000,
+  daily: 60 * 60_000,
   rate: 60_000,
   missing: 60 * 60_000,
   unavailable: 60_000,
 };
+
+/** A model call that produced nothing within the first-token timeout. */
+export class ModelTimeoutError extends Error {
+  constructor(readonly model: string, readonly timeoutMs: number) {
+    super(`No response from ${model} within ${timeoutMs} ms`);
+    this.name = 'ModelTimeoutError';
+  }
+}
 
 /** Unwraps the AI SDK's retry wrapper to the last provider error. */
 export function rootError(error: unknown): unknown {
@@ -43,6 +55,7 @@ function errorText(error: unknown): string {
 }
 
 export function fallbackReason(error: unknown): FallbackReason | null {
+  if (error instanceof ModelTimeoutError) return 'unavailable';
   const status = statusCode(error);
   if (status === 429) return isDailyQuotaError(errorText(error)) ? 'daily' : 'rate';
   if (status === 404) return 'missing';
@@ -56,8 +69,9 @@ export class Cooldowns {
 
   constructor(private readonly clock: () => number = Date.now) {}
 
-  set(model: string, reason: FallbackReason) {
-    this.until.set(model, this.clock() + COOLDOWN_MS[reason]);
+  /** Skips `model` until `until` (epoch ms), or for the reason's default duration. */
+  set(model: string, reason: FallbackReason, until?: number) {
+    this.until.set(model, Math.max(this.until.get(model) ?? 0, until ?? this.clock() + COOLDOWN_MS[reason]));
   }
 
   isCooling(model: string): boolean {

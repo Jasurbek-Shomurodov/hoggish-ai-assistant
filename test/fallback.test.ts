@@ -1,6 +1,6 @@
 import { RetryError } from 'ai';
 import { describe, expect, it } from 'vitest';
-import { Cooldowns, fallbackReason, isDailyQuotaError, modelsToTry } from '../src/fallback';
+import { Cooldowns, ModelTimeoutError, fallbackReason, isDailyQuotaError, modelsToTry } from '../src/fallback';
 import { apiError, dailyQuotaError, minuteQuotaError } from './helpers';
 
 describe('fallbackReason', () => {
@@ -46,6 +46,23 @@ describe('modelsToTry', () => {
     expect(modelsToTry(chain, new Set(['a', 'b', 'c']), cooldowns).map((entry) => entry.model)).toEqual(['a', 'b', 'c']);
     cooldowns.set('a', 'missing');
     expect(modelsToTry(chain, new Set(['a', 'b', 'c']), cooldowns).map((entry) => entry.model)).toEqual(['b', 'c']);
+  });
+
+  it('honours an explicit end time and never shortens a cooldown', () => {
+    let now = 0;
+    const cooldowns = new Cooldowns(() => now);
+    cooldowns.set('a', 'daily', 5 * 60 * 60_000);
+    now = 4 * 60 * 60_000;
+    expect(cooldowns.isCooling('a')).toBe(true);
+    cooldowns.set('a', 'rate');
+    now = 4 * 60 * 60_000 + 61_000;
+    expect(cooldowns.isCooling('a')).toBe(true);
+    now = 5 * 60 * 60_000 + 1;
+    expect(cooldowns.isCooling('a')).toBe(false);
+  });
+
+  it('treats a first-token timeout as the model being unavailable', () => {
+    expect(fallbackReason(new ModelTimeoutError('a', 30_000))).toBe('unavailable');
   });
 
   it('keeps missing models out for an hour', () => {

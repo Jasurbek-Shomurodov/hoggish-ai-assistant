@@ -60,6 +60,17 @@ type ModelInput = string | (QuotaModel & {
  */
 declare const GEMINI_FREE_MODELS: readonly Required<QuotaModel>[];
 declare const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5";
+/** How much a Gemini model may think before answering. `'minimal'` turns thinking off where the model allows it. */
+type GeminiThinking = 'minimal' | 'low' | 'medium' | 'high';
+/** Default thinking effort for Gemini: enough for tool choice, without seconds of silence. */
+declare const DEFAULT_GEMINI_THINKING: GeminiThinking;
+/**
+ * Provider options that set a Gemini model's thinking effort. Gemini 3 models
+ * take a level; Gemini 2.5 models take a token budget. Thinking is on by
+ * default and runs before every call, including the ones that only pick a
+ * tool, so a low setting removes several seconds from each round.
+ */
+declare function geminiThinkingOptions(model: string, thinking: GeminiThinking): ProviderOptions;
 interface GeminiProviderOptions {
     apiKey: string | undefined;
     /**
@@ -72,6 +83,12 @@ interface GeminiProviderOptions {
     maxRetries?: number;
     maxOutputTokens?: number;
     providerOptions?: ProviderOptions;
+    /**
+     * Thinking effort for every model in the chain. Default `'low'`; `false`
+     * leaves Google's default (full thinking) in place. A `thinkingConfig` in
+     * `providerOptions.google` overrides this.
+     */
+    thinking?: GeminiThinking | false;
 }
 declare function geminiProvider(options: GeminiProviderOptions): AssistantProvider;
 interface AnthropicProviderOptions {
@@ -181,6 +198,11 @@ interface AssistantHandlerOptions<CTX> {
     quotaStore?: QuotaStore;
     /** Model calls per question. Default 8. */
     maxRounds?: number;
+    /**
+     * How long a model may stay silent before the call is abandoned and the
+     * next model in the chain is tried. Default 30 000 ms; 0 disables.
+     */
+    firstTokenTimeoutMs?: number;
     limits?: Partial<RequestLimits>;
     /** Signs confirmation proposals so only calls the server proposed can run. Recommended. */
     confirmationSecret?: string;
@@ -226,8 +248,18 @@ declare function createAssistantHandler<CTX>(options: AssistantHandlerOptions<CT
  * - `unavailable`: provider overloaded or failing (500, 503, 529)
  */
 type FallbackReason = 'daily' | 'rate' | 'missing' | 'unavailable';
-/** How long this server instance skips a model after each kind of failure. */
+/**
+ * How long this server instance skips a model after each kind of failure.
+ * A daily quota lasts until the quota day resets; callers pass that instant
+ * to `Cooldowns.set`, and this value is only the fallback when they do not.
+ */
 declare const COOLDOWN_MS: Record<FallbackReason, number>;
+/** A model call that produced nothing within the first-token timeout. */
+declare class ModelTimeoutError extends Error {
+    readonly model: string;
+    readonly timeoutMs: number;
+    constructor(model: string, timeoutMs: number);
+}
 /** Gemini says which quota a 429 hit; only a per-day limit lasts until reset. */
 declare function isDailyQuotaError(message: string | undefined): boolean;
 declare function fallbackReason(error: unknown): FallbackReason | null;
@@ -236,7 +268,8 @@ declare class Cooldowns {
     private readonly clock;
     private readonly until;
     constructor(clock?: () => number);
-    set(model: string, reason: FallbackReason): void;
+    /** Skips `model` until `until` (epoch ms), or for the reason's default duration. */
+    set(model: string, reason: FallbackReason, until?: number): void;
     isCooling(model: string): boolean;
     clear(): void;
 }
@@ -258,6 +291,11 @@ declare class ChainExhaustedError extends Error {
 /** Model calls per question; each tool round is one call. */
 declare const MAX_ROUNDS = 8;
 /**
+ * How long a model call may stay silent before the turn moves to the next
+ * model. Once a model has started responding there is no limit.
+ */
+declare const FIRST_TOKEN_TIMEOUT_MS = 30000;
+/**
  * Google documents this value for function-call parts the current model did
  * not produce. It is used when a fallback switches models partway through one
  * answer, because thought signatures are tied to the model that made them.
@@ -274,6 +312,8 @@ interface TurnOptions {
     send: (event: AssistantEvent) => void;
     signal: AbortSignal;
     maxRounds?: number;
+    /** Silence allowed before a model call is abandoned for the next model. Default 30 000 ms; 0 disables. */
+    firstTokenTimeoutMs?: number;
     /** Models recorded as out of daily quota. */
     skipModels?: Iterable<string>;
     cooldowns: Cooldowns;
@@ -305,5 +345,5 @@ interface ConfirmationPayload {
 declare function signConfirmation(secret: string, payload: ConfirmationPayload, now?: number): Promise<string>;
 declare function verifyConfirmation(secret: string, token: unknown, payload: ConfirmationPayload, now?: number): Promise<boolean>;
 
-export { AssistantError, AssistantErrorCode, AssistantEvent, AssistantTools, CONFIRMATION_TTL_MS, CONTEXT_WINDOWS, COOLDOWN_MS, ChainExhaustedError, ChatMessage, ConfirmedCall, Cooldowns, DEFAULT_CLAUDE_MODEL, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, ModelInfo, QuotaModel, QuotaStore, QuotaSummary, RequestLimits, RequestResult, anthropicProvider, contextWindowFor, createAssistantHandler, customProvider, errorCode, fallbackReason, geminiProvider, isDailyQuotaError, modelsToTry, providerChain, providerFromEnv, runTurn, signConfirmation, verifyConfirmation };
-export type { AnthropicProviderOptions, AssistantHandler, AssistantHandlerOptions, AssistantProvider, ChainLink, ChainModel, CustomProviderOptions, EnvSource, ErrorInfo, ErrorStage, FallbackReason, GeminiProviderOptions, ModelInput, ModelSettings, ProviderChainOptions, ProviderOptions, TurnOptions, UsageResponse };
+export { AssistantError, AssistantErrorCode, AssistantEvent, AssistantTools, CONFIRMATION_TTL_MS, CONTEXT_WINDOWS, COOLDOWN_MS, ChainExhaustedError, ChatMessage, ConfirmedCall, Cooldowns, DEFAULT_CLAUDE_MODEL, DEFAULT_GEMINI_THINKING, FIRST_TOKEN_TIMEOUT_MS, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, ModelInfo, ModelTimeoutError, QuotaModel, QuotaStore, QuotaSummary, RequestLimits, RequestResult, anthropicProvider, contextWindowFor, createAssistantHandler, customProvider, errorCode, fallbackReason, geminiProvider, geminiThinkingOptions, isDailyQuotaError, modelsToTry, providerChain, providerFromEnv, runTurn, signConfirmation, verifyConfirmation };
+export type { AnthropicProviderOptions, AssistantHandler, AssistantHandlerOptions, AssistantProvider, ChainLink, ChainModel, CustomProviderOptions, EnvSource, ErrorInfo, ErrorStage, FallbackReason, GeminiProviderOptions, GeminiThinking, ModelInput, ModelSettings, ProviderChainOptions, ProviderOptions, TurnOptions, UsageResponse };

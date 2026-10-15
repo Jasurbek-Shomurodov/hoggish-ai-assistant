@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { AssistantError, createAssistantHandler, type AssistantHandlerOptions } from '../src/handler';
-import { createMemoryQuotaStore, quotaDate } from '../src/quota';
+import { createMemoryQuotaStore, nextQuotaReset, quotaDate } from '../src/quota';
 import { defineTool, ToolError, type AssistantTools } from '../src/tools';
 import type { AssistantProvider } from '../src/providers';
-import { apiError, chainProvider, chatRequest, collect, dailyQuotaError, minuteQuotaError, textOf } from './helpers';
+import { apiError, chainProvider, chatRequest, collect, dailyQuotaError, minuteQuotaError, silentModel, textOf } from './helpers';
 
 const question = { messages: [{ role: 'user', content: 'How much did we earn?' }] };
 
@@ -224,6 +224,49 @@ describe('fallback chain', () => {
     expect(provider.mocks[0]!.doStreamCalls).toHaveLength(1);
   });
 
+  it('keeps a model out of daily quota skipped until the quota resets, even without a store', async () => {
+    vi.useFakeTimers();
+    try {
+      const start = new Date('2026-10-15T12:00:00Z');
+      vi.setSystemTime(start);
+      const provider = chainProvider([
+        { id: 'strong', dailyLimit: 20, responses: [dailyQuotaError(), { text: 'strong again' }] },
+        { id: 'light', dailyLimit: 500, responses: [{ text: 'light' }] },
+      ]);
+      const handler = handlerFor(provider);
+      expect(textOf(await collect(await handler.chat(chatRequest(question))))).toBe('light');
+      vi.setSystemTime(new Date(start.getTime() + 3 * 60 * 60_000));
+      expect(textOf(await collect(await handler.chat(chatRequest(question))))).toBe('light');
+      expect(provider.mocks[0]!.doStreamCalls).toHaveLength(1);
+      vi.setSystemTime(new Date(nextQuotaReset(start).getTime() + 1_000));
+      expect(textOf(await collect(await handler.chat(chatRequest(question))))).toBe('strong again');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('moves to the next model when one stays silent past the first-token timeout', async () => {
+    const silent = silentModel('slow');
+    const provider = chainProvider([{ id: 'fast', responses: [{ text: 'fast answer' }] }]);
+    provider.models.unshift({ model: 'slow', languageModel: silent });
+    const handler = handlerFor(provider, { firstTokenTimeoutMs: 20 });
+    const events = await collect(await handler.chat(chatRequest(question)));
+    expect(textOf(events)).toBe('fast answer');
+    expect(events.at(-1)).toEqual({ type: 'done' });
+    expect(silent.doStreamCalls).toHaveLength(1);
+    // The silent model is cooling down, so the next request skips it at once.
+    expect(textOf(await collect(await handler.chat(chatRequest(question))))).toBe('fast answer');
+    expect(silent.doStreamCalls).toHaveLength(1);
+  });
+
+  it('answers BUSY when the only model times out', async () => {
+    const silent = silentModel('slow');
+    const provider = chainProvider([{ id: 'x', responses: [{ text: 'never' }] }]);
+    provider.models.splice(0, 1, { model: 'slow', languageModel: silent });
+    const events = await collect(await handlerFor(provider, { firstTokenTimeoutMs: 20 }).chat(chatRequest(question)));
+    expect(events).toContainEqual({ type: 'error', code: 'BUSY' });
+  });
+
   it('falls back on 404, 500 and 503', async () => {
     const provider = chainProvider([
       { id: 'a', responses: [apiError(404)] },
@@ -394,6 +437,17 @@ describe('usage endpoint', () => {
     const body = await response.json() as { quota: { requestsLeft: number; questionsLeft: number; usingFallback: boolean } };
     expect(authorize).toHaveBeenCalledWith(expect.any(Request), { clubId: 'c1' });
     expect(body.quota).toMatchObject({ requestsLeft: 519, questionsLeft: 173, usingFallback: false });
+  });
+
+  it('reads the quota store once per usage request and once per chat request', async () => {
+    const store = createMemoryQuotaStore();
+    const load = vi.spyOn(store, 'load');
+    const provider = chainProvider([{ id: 'strong', dailyLimit: 20, responses: [{ text: 'x' }] }]);
+    const handler = handlerFor(provider, { quotaStore: store });
+    await handler.usage(new Request('https://app.test/usage'));
+    expect(load).toHaveBeenCalledTimes(1);
+    await collect(await handler.chat(chatRequest(question)));
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it('returns null quota for untracked providers', async () => {

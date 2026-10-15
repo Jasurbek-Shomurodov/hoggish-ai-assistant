@@ -67,6 +67,18 @@ export function mockModel(id: string, responses: Response[]) {
   return model;
 }
 
+/** A model that never answers; it only rejects once the call's abort signal fires. */
+export function silentModel(id: string) {
+  return new MockLanguageModelV4({
+    modelId: id,
+    doStream: ({ abortSignal }) => new Promise((_resolve, reject) => {
+      const fail = () => reject(abortSignal?.reason ?? new Error('aborted'));
+      if (abortSignal?.aborted) fail();
+      else abortSignal?.addEventListener('abort', fail, { once: true });
+    }),
+  });
+}
+
 export function apiError(status: number, message = `HTTP ${status}`, responseBody?: string, requestBodyValues: unknown = {}) {
   return new APICallError({
     message,
