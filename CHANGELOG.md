@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- `useAssistantChat` keeps the previous `quota` and `model` while the usage endpoint reloads for a
+  new `context` (for example a language switch), so a badge built from them no longer disappears
+  and reappears. Only the newest usage request updates state; a failed request still clears them.
+
 ## 0.3.0
 
 - Show which model is answering: the stream sends a `model` event when a model accepts a call

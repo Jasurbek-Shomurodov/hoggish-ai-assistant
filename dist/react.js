@@ -202,6 +202,7 @@ function useAssistantChat(options) {
   const busyRef = useRef(false);
   const fileUrlsRef = useRef([]);
   const mountedRef = useRef(true);
+  const quotaRequestRef = useRef(0);
   optionsRef.current = options;
   const contextKey = JSON.stringify(options.context ?? null);
   const update = useCallback((updater) => {
@@ -214,6 +215,8 @@ function useAssistantChat(options) {
   const refreshQuota = useCallback(async () => {
     const { usageApi, context: context2, credentials } = optionsRef.current;
     if (!usageApi) return;
+    const request = ++quotaRequestRef.current;
+    const current = () => mountedRef.current && request === quotaRequestRef.current;
     const fetcher = optionsRef.current.fetch ?? globalThis.fetch;
     try {
       const url = new URL(usageApi, globalThis.location?.href ?? "http://localhost");
@@ -221,20 +224,18 @@ function useAssistantChat(options) {
       const headers = typeof optionsRef.current.headers === "function" ? await optionsRef.current.headers() : optionsRef.current.headers;
       const response = await fetcher(url.toString(), { cache: "no-store", credentials, headers });
       const payload = response.ok ? await response.json() : null;
-      if (mountedRef.current) {
+      if (current()) {
         setQuota(payload?.quota ?? null);
         setNextModel(payload?.model ?? null);
       }
     } catch {
-      if (mountedRef.current) {
+      if (current()) {
         setQuota(null);
         setNextModel(null);
       }
     }
   }, []);
   useEffect(() => {
-    setQuota(null);
-    setNextModel(null);
     void refreshQuota();
   }, [contextKey, options.usageApi, refreshQuota]);
   useEffect(() => {

@@ -113,6 +113,30 @@ describe('useAssistantChat', () => {
     expect(result.current.model?.model).toBe('m1');
   });
 
+  it('keeps the model and quota on screen while a new context loads', async () => {
+    const { fetchMock } = setup([]);
+    const { result, rerender } = renderHook(({ locale }) => useAssistantChat({
+      api: '/api/assistant',
+      usageApi: '/api/assistant/usage',
+      context: { clubId: 'c1', locale },
+      fetch: fetchMock as typeof fetch,
+    }), { initialProps: { locale: 'en' } });
+    await waitFor(() => expect(result.current.model?.model).toBe('m1'));
+    await waitFor(() => expect(result.current.quota).not.toBeNull());
+
+    const seen: Array<string | undefined> = [];
+    const quotas: boolean[] = [];
+    rerender({ locale: 'ru' });
+    seen.push(result.current.model?.model);
+    quotas.push(result.current.quota !== null);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.model?.model).toBe('m1'));
+    seen.push(result.current.model?.model);
+    quotas.push(result.current.quota !== null);
+    expect(seen).toEqual(['m1', 'm1']);
+    expect(quotas).toEqual([true, true]);
+  });
+
   it('shows server error codes', async () => {
     const { fetchMock } = setup([{ text: 'x' }]);
     const { result } = renderHook(() => useAssistantChat({ api: '/api/assistant', fetch: fetchMock as typeof fetch }));

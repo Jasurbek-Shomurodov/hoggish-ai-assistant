@@ -32,7 +32,7 @@ prompt and API key. Give each app its own Google project so each gets its own fr
 ```json
 {
   "dependencies": {
-    "hoggish-assistant": "github:Jasurbek-Shomurodov/hoggish-ai-assistant#v0.3.0"
+    "hoggish-assistant": "github:Jasurbek-Shomurodov/hoggish-ai-assistant#v0.3.1"
   }
 }
 ```
@@ -246,7 +246,7 @@ bare imports to npm:
 // supabase/functions/assistant/deno.json
 {
   "imports": {
-    "hoggish-assistant/": "https://cdn.jsdelivr.net/gh/Jasurbek-Shomurodov/hoggish-ai-assistant@v0.3.0/dist/",
+    "hoggish-assistant/": "https://cdn.jsdelivr.net/gh/Jasurbek-Shomurodov/hoggish-ai-assistant@v0.3.1/dist/",
     "ai": "npm:ai@^7.0.141",
     "@ai-sdk/google": "npm:@ai-sdk/google@^4.0.96",
     "@ai-sdk/anthropic": "npm:@ai-sdk/anthropic@^4.0.80",

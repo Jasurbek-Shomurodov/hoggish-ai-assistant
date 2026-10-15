@@ -143,6 +143,7 @@ export function useAssistantChat(options: UseAssistantChatOptions): UseAssistant
   const busyRef = useRef(false);
   const fileUrlsRef = useRef<string[]>([]);
   const mountedRef = useRef(true);
+  const quotaRequestRef = useRef(0);
   optionsRef.current = options;
   const contextKey = JSON.stringify(options.context ?? null);
 
@@ -158,6 +159,10 @@ export function useAssistantChat(options: UseAssistantChatOptions): UseAssistant
   const refreshQuota = useCallback(async () => {
     const { usageApi, context, credentials } = optionsRef.current;
     if (!usageApi) return;
+    // Only the newest request may update state, so a slow earlier response
+    // (for the previous context) cannot overwrite a newer one.
+    const request = ++quotaRequestRef.current;
+    const current = () => mountedRef.current && request === quotaRequestRef.current;
     const fetcher = optionsRef.current.fetch ?? globalThis.fetch;
     try {
       const url = new URL(usageApi, globalThis.location?.href ?? 'http://localhost');
@@ -165,21 +170,21 @@ export function useAssistantChat(options: UseAssistantChatOptions): UseAssistant
       const headers = typeof optionsRef.current.headers === 'function' ? await optionsRef.current.headers() : optionsRef.current.headers;
       const response = await fetcher(url.toString(), { cache: 'no-store', credentials, headers });
       const payload = response.ok ? await response.json() as { quota?: QuotaSummary | null; model?: ModelInfo | null } : null;
-      if (mountedRef.current) {
+      if (current()) {
         setQuota(payload?.quota ?? null);
         setNextModel(payload?.model ?? null);
       }
     } catch {
-      if (mountedRef.current) {
+      if (current()) {
         setQuota(null);
         setNextModel(null);
       }
     }
   }, []);
 
+  // Keeps the previous quota and model on screen while the new context loads
+  // (a language switch would otherwise blank the badge); a failed load clears them.
   useEffect(() => {
-    setQuota(null);
-    setNextModel(null);
     void refreshQuota();
   }, [contextKey, options.usageApi, refreshQuota]);
 
