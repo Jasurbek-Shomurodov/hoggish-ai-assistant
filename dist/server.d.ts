@@ -8,18 +8,27 @@ export { A as AssistantFile, b as AssistantTool, T as ToolError, c as ToolRunOpt
 
 /** Provider-specific call options, keyed by provider (`google`, `anthropic`, …). */
 type ProviderOptions = Record<string, Record<string, unknown>>;
+/** Call settings that a model in a chain may override from its provider. */
+interface ModelSettings {
+    maxOutputTokens?: number;
+    providerOptions?: ProviderOptions;
+    /** Mark the stable system prompt cacheable (Anthropic prompt caching). */
+    cacheSystemPrompt?: boolean;
+}
 /** One model in a fallback chain. */
-interface ChainModel extends QuotaModel {
+interface ChainModel extends QuotaModel, ModelSettings {
     /** Stable id used for quota rows and cooldowns, normally the model id. */
     model: string;
     languageModel: LanguageModel;
+    /** Name of the provider this model came from, set by `providerChain`. */
+    provider?: string;
 }
 /**
  * A configured provider: an ordered model chain (strongest first) plus call
  * settings. Build one with `geminiProvider`, `anthropicProvider`,
  * `customProvider` or `providerFromEnv`; switching providers is a config change.
  */
-interface AssistantProvider {
+interface AssistantProvider extends ModelSettings {
     name: string;
     /** False when the server-side API key is missing. */
     configured: boolean;
@@ -28,10 +37,6 @@ interface AssistantProvider {
     quotaTimeZone: string;
     /** AI SDK retries per model. Chains default to 0 so fallback is immediate. */
     maxRetries: number;
-    maxOutputTokens?: number;
-    providerOptions?: ProviderOptions;
-    /** Mark the stable system prompt cacheable (Anthropic prompt caching). */
-    cacheSystemPrompt?: boolean;
 }
 type ModelInput = string | QuotaModel;
 /**
@@ -79,12 +84,47 @@ interface CustomProviderOptions {
 }
 /** Any AI SDK language models (OpenAI, Bedrock, Vertex, a mock in tests, …). */
 declare function customProvider(options: CustomProviderOptions): AssistantProvider;
+/**
+ * One link of a `providerChain`: a provider built with its own API key, and
+ * where it sits in the order. Lower `priority` is tried first (1 before 2);
+ * links without a priority keep their array position after the numbered ones.
+ */
+interface ChainLink {
+    provider: AssistantProvider;
+    priority?: number;
+    /** Overrides the provider's name in model ids and error reports. */
+    name?: string;
+}
+interface ProviderChainOptions {
+    /** Defaults to the linked provider names joined with `+`. */
+    name?: string;
+    /** Defaults to 0 (fallback is immediate) when the chain has more than one model. */
+    maxRetries?: number;
+    /** Defaults to the first configured link's time zone. */
+    quotaTimeZone?: string;
+}
+/**
+ * Joins providers into one fallback chain, so a project can inject several
+ * API keys (a free Gemini key, a second Gemini project, a paid Claude key…)
+ * and rank them. Each model call walks the whole chain in priority order:
+ * when a model's daily quota is used up, or it is rate limited or down, the
+ * next model answers inline, even if it belongs to another provider.
+ *
+ * Links whose key is missing (`configured: false`) are left out, so the same
+ * code works in environments that only set some of the keys. Each model keeps
+ * its own provider's settings (output limit, provider options, prompt
+ * caching), and the model ids stay unique: when two links share a model id
+ * the later ones are prefixed with the link's name (`backup/gemini-2.5-flash`).
+ */
+declare function providerChain(links: ReadonlyArray<ChainLink | AssistantProvider>, options?: ProviderChainOptions): AssistantProvider;
 type EnvSource = Record<string, string | undefined>;
 /**
  * Picks the provider from environment variables, so switching an app to a
  * paid tier is a deployment setting rather than a code change:
  *
- * - `ASSISTANT_PROVIDER`: `gemini` (default when `GEMINI_API_KEY` is set) or `anthropic`
+ * - `ASSISTANT_PROVIDER`: `gemini` (default when `GEMINI_API_KEY` is set) or
+ *   `anthropic`; or a comma-separated priority list such as
+ *   `gemini,anthropic`, which builds a `providerChain` in that order
  * - `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`: server-only keys
  * - `ASSISTANT_MODEL`: optional single model id; for Gemini it replaces the
  *   free chain and turns quota tracking off (use it for a paid tier)
@@ -242,5 +282,5 @@ interface ConfirmationPayload {
 declare function signConfirmation(secret: string, payload: ConfirmationPayload, now?: number): Promise<string>;
 declare function verifyConfirmation(secret: string, token: unknown, payload: ConfirmationPayload, now?: number): Promise<boolean>;
 
-export { AssistantError, AssistantErrorCode, AssistantEvent, AssistantTools, CONFIRMATION_TTL_MS, COOLDOWN_MS, ChainExhaustedError, ChatMessage, ConfirmedCall, Cooldowns, DEFAULT_CLAUDE_MODEL, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, QuotaModel, QuotaStore, QuotaSummary, RequestLimits, RequestResult, anthropicProvider, createAssistantHandler, customProvider, errorCode, fallbackReason, geminiProvider, isDailyQuotaError, modelsToTry, providerFromEnv, runTurn, signConfirmation, verifyConfirmation };
-export type { AnthropicProviderOptions, AssistantHandler, AssistantHandlerOptions, AssistantProvider, ChainModel, CustomProviderOptions, EnvSource, ErrorInfo, ErrorStage, FallbackReason, GeminiProviderOptions, ModelInput, ProviderOptions, TurnOptions };
+export { AssistantError, AssistantErrorCode, AssistantEvent, AssistantTools, CONFIRMATION_TTL_MS, COOLDOWN_MS, ChainExhaustedError, ChatMessage, ConfirmedCall, Cooldowns, DEFAULT_CLAUDE_MODEL, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, QuotaModel, QuotaStore, QuotaSummary, RequestLimits, RequestResult, anthropicProvider, createAssistantHandler, customProvider, errorCode, fallbackReason, geminiProvider, isDailyQuotaError, modelsToTry, providerChain, providerFromEnv, runTurn, signConfirmation, verifyConfirmation };
+export type { AnthropicProviderOptions, AssistantHandler, AssistantHandlerOptions, AssistantProvider, ChainLink, ChainModel, CustomProviderOptions, EnvSource, ErrorInfo, ErrorStage, FallbackReason, GeminiProviderOptions, ModelInput, ModelSettings, ProviderChainOptions, ProviderOptions, TurnOptions };

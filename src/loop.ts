@@ -10,7 +10,7 @@ import {
 import { signConfirmation } from './confirm';
 import type { AssistantEvent } from './events';
 import { ChainExhaustedError, Cooldowns, fallbackReason, modelsToTry } from './fallback';
-import type { AssistantProvider } from './providers';
+import { modelSettings, type AssistantProvider, type ChainModel } from './providers';
 import type { RequestResult } from './quota';
 import type { ChatMessage, ConfirmedCall } from './request';
 import {
@@ -100,11 +100,11 @@ function sdkTools(tools: AssistantTools): ToolSet {
   return set;
 }
 
-function instructions(provider: AssistantProvider, system: string, context?: string): SystemModelMessage[] {
+function instructions(cacheSystemPrompt: boolean | undefined, system: string, context?: string): SystemModelMessage[] {
   const messages: SystemModelMessage[] = [{
     role: 'system',
     content: system,
-    ...(provider.cacheSystemPrompt ? { providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } } } : {}),
+    ...(cacheSystemPrompt ? { providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } } } : {}),
   }];
   if (context?.trim()) messages.push({ role: 'system', content: context });
   return messages;
@@ -153,7 +153,7 @@ export async function runTurn(options: TurnOptions): Promise<void> {
   const maxRounds = options.maxRounds ?? MAX_ROUNDS;
   const skip = new Set(options.skipModels ?? []);
   const toolSet = sdkTools(tools);
-  const system = instructions(provider, options.system, options.context);
+  const systemFor = (entry: ChainModel) => instructions(modelSettings(provider, entry).cacheSystemPrompt, options.system, options.context);
   const turns: Turn[] = options.history.map((message) => ({ message, producer: null }));
   let textSent = options.history.length > 0 && options.history[options.history.length - 1]!.role === 'assistant';
 
@@ -202,15 +202,16 @@ export async function runTurn(options: TurnOptions): Promise<void> {
     for (const entry of candidates) {
       let roundText = false;
       let accepted = false;
+      const settings = modelSettings(provider, entry);
       try {
         const result = streamText({
           model: entry.languageModel,
-          instructions: system,
+          instructions: systemFor(entry),
           messages: messagesFor(turns, entry.model),
           tools: toolSet,
           maxRetries: provider.maxRetries,
-          ...(provider.maxOutputTokens ? { maxOutputTokens: provider.maxOutputTokens } : {}),
-          ...(provider.providerOptions ? { providerOptions: provider.providerOptions as never } : {}),
+          ...(settings.maxOutputTokens ? { maxOutputTokens: settings.maxOutputTokens } : {}),
+          ...(settings.providerOptions ? { providerOptions: settings.providerOptions as never } : {}),
           abortSignal: signal,
           // The AI SDK's default logs the whole error, whose requestBodyValues
           // hold the prompt, history and tool results. Errors still reach the

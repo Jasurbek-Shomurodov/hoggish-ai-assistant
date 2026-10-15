@@ -6,11 +6,21 @@ import { PACIFIC_TIME_ZONE, type QuotaModel } from './quota';
 /** Provider-specific call options, keyed by provider (`google`, `anthropic`, …). */
 export type ProviderOptions = Record<string, Record<string, unknown>>;
 
+/** Call settings that a model in a chain may override from its provider. */
+export interface ModelSettings {
+  maxOutputTokens?: number;
+  providerOptions?: ProviderOptions;
+  /** Mark the stable system prompt cacheable (Anthropic prompt caching). */
+  cacheSystemPrompt?: boolean;
+}
+
 /** One model in a fallback chain. */
-export interface ChainModel extends QuotaModel {
+export interface ChainModel extends QuotaModel, ModelSettings {
   /** Stable id used for quota rows and cooldowns, normally the model id. */
   model: string;
   languageModel: LanguageModel;
+  /** Name of the provider this model came from, set by `providerChain`. */
+  provider?: string;
 }
 
 /**
@@ -18,7 +28,7 @@ export interface ChainModel extends QuotaModel {
  * settings. Build one with `geminiProvider`, `anthropicProvider`,
  * `customProvider` or `providerFromEnv`; switching providers is a config change.
  */
-export interface AssistantProvider {
+export interface AssistantProvider extends ModelSettings {
   name: string;
   /** False when the server-side API key is missing. */
   configured: boolean;
@@ -27,10 +37,15 @@ export interface AssistantProvider {
   quotaTimeZone: string;
   /** AI SDK retries per model. Chains default to 0 so fallback is immediate. */
   maxRetries: number;
-  maxOutputTokens?: number;
-  providerOptions?: ProviderOptions;
-  /** Mark the stable system prompt cacheable (Anthropic prompt caching). */
-  cacheSystemPrompt?: boolean;
+}
+
+/** Effective call settings for one model: its own, else its provider's. */
+export function modelSettings(provider: AssistantProvider, model: ChainModel): ModelSettings {
+  return {
+    maxOutputTokens: model.maxOutputTokens ?? provider.maxOutputTokens,
+    providerOptions: model.providerOptions ?? provider.providerOptions,
+    cacheSystemPrompt: model.cacheSystemPrompt ?? provider.cacheSystemPrompt,
+  };
 }
 
 export type ModelInput = string | QuotaModel;
@@ -136,13 +151,77 @@ export function customProvider(options: CustomProviderOptions): AssistantProvide
   };
 }
 
+/**
+ * One link of a `providerChain`: a provider built with its own API key, and
+ * where it sits in the order. Lower `priority` is tried first (1 before 2);
+ * links without a priority keep their array position after the numbered ones.
+ */
+export interface ChainLink {
+  provider: AssistantProvider;
+  priority?: number;
+  /** Overrides the provider's name in model ids and error reports. */
+  name?: string;
+}
+
+export interface ProviderChainOptions {
+  /** Defaults to the linked provider names joined with `+`. */
+  name?: string;
+  /** Defaults to 0 (fallback is immediate) when the chain has more than one model. */
+  maxRetries?: number;
+  /** Defaults to the first configured link's time zone. */
+  quotaTimeZone?: string;
+}
+
+/**
+ * Joins providers into one fallback chain, so a project can inject several
+ * API keys (a free Gemini key, a second Gemini project, a paid Claude key…)
+ * and rank them. Each model call walks the whole chain in priority order:
+ * when a model's daily quota is used up, or it is rate limited or down, the
+ * next model answers inline, even if it belongs to another provider.
+ *
+ * Links whose key is missing (`configured: false`) are left out, so the same
+ * code works in environments that only set some of the keys. Each model keeps
+ * its own provider's settings (output limit, provider options, prompt
+ * caching), and the model ids stay unique: when two links share a model id
+ * the later ones are prefixed with the link's name (`backup/gemini-2.5-flash`).
+ */
+export function providerChain(links: ReadonlyArray<ChainLink | AssistantProvider>, options: ProviderChainOptions = {}): AssistantProvider {
+  const normalized = links
+    .map((link, index) => ('provider' in link ? { ...link, index } : { provider: link, index }))
+    .filter((link) => link.provider.configured && link.provider.models.length > 0)
+    .sort((a, b) => rank(a.priority) - rank(b.priority) || a.index - b.index);
+  const seen = new Set<string>();
+  const models: ChainModel[] = [];
+  for (const link of normalized) {
+    const name = link.name ?? link.provider.name;
+    for (const model of link.provider.models) {
+      const id = seen.has(model.model) ? `${name}/${model.model}` : model.model;
+      seen.add(id);
+      models.push({ ...modelSettings(link.provider, model), ...model, model: id, provider: name });
+    }
+  }
+  return {
+    name: options.name ?? (normalized.map((link) => link.name ?? link.provider.name).join('+') || 'chain'),
+    configured: models.length > 0,
+    models,
+    quotaTimeZone: options.quotaTimeZone ?? normalized[0]?.provider.quotaTimeZone ?? PACIFIC_TIME_ZONE,
+    maxRetries: options.maxRetries ?? (models.length > 1 ? 0 : normalized[0]?.provider.maxRetries ?? 2),
+  };
+}
+
+function rank(priority: number | undefined): number {
+  return typeof priority === 'number' && Number.isFinite(priority) ? priority : Number.POSITIVE_INFINITY;
+}
+
 export type EnvSource = Record<string, string | undefined>;
 
 /**
  * Picks the provider from environment variables, so switching an app to a
  * paid tier is a deployment setting rather than a code change:
  *
- * - `ASSISTANT_PROVIDER`: `gemini` (default when `GEMINI_API_KEY` is set) or `anthropic`
+ * - `ASSISTANT_PROVIDER`: `gemini` (default when `GEMINI_API_KEY` is set) or
+ *   `anthropic`; or a comma-separated priority list such as
+ *   `gemini,anthropic`, which builds a `providerChain` in that order
  * - `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`: server-only keys
  * - `ASSISTANT_MODEL`: optional single model id; for Gemini it replaces the
  *   free chain and turns quota tracking off (use it for a paid tier)
@@ -150,11 +229,14 @@ export type EnvSource = Record<string, string | undefined>;
  * Pass `process.env` in Node or `Deno.env.toObject()` in Deno.
  */
 export function providerFromEnv(env: EnvSource, defaults: { provider?: 'gemini' | 'anthropic' } = {}): AssistantProvider {
-  const requested = env.ASSISTANT_PROVIDER?.trim().toLowerCase();
-  const name = requested === 'anthropic' || requested === 'gemini'
-    ? requested
-    : defaults.provider ?? (env.GEMINI_API_KEY ? 'gemini' : 'anthropic');
+  const requested = (env.ASSISTANT_PROVIDER ?? '')
+    .split(',')
+    .map((name) => name.trim().toLowerCase())
+    .filter((name): name is 'gemini' | 'anthropic' => name === 'gemini' || name === 'anthropic');
   const model = env.ASSISTANT_MODEL?.trim() || undefined;
-  if (name === 'anthropic') return anthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, model });
-  return geminiProvider({ apiKey: env.GEMINI_API_KEY, models: model ? [model] : undefined });
+  const build = (name: 'gemini' | 'anthropic') => name === 'anthropic'
+    ? anthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, model })
+    : geminiProvider({ apiKey: env.GEMINI_API_KEY, models: model ? [model] : undefined });
+  if (requested.length > 1) return providerChain(requested.map(build));
+  return build(requested[0] ?? defaults.provider ?? (env.GEMINI_API_KEY ? 'gemini' : 'anthropic'));
 }

@@ -29,7 +29,7 @@ prompt and API key. Give each app its own Google project so each gets its own fr
 ```json
 {
   "dependencies": {
-    "hoggish-assistant": "github:exampleschool23/hoggish-assistant#v0.1.1"
+    "hoggish-assistant": "github:exampleschool23/hoggish-assistant#v0.2.0"
   }
 }
 ```
@@ -77,6 +77,33 @@ anthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY });
 // and optionally ASSISTANT_MODEL (one model id; for Gemini it replaces the free chain).
 providerFromEnv(process.env);
 ```
+
+### Several keys with priorities
+
+A project can inject more than one API key and rank them. `providerChain` joins providers into
+one chain: every model call walks it in priority order, and when a model's daily quota is used up
+(or it is rate limited or down) the next model answers inline, even across providers. Links whose
+key is missing are left out, so the same code runs where only some keys are set.
+
+```ts
+import { anthropicProvider, geminiProvider, providerChain } from 'hoggish-assistant/server';
+
+const provider = providerChain([
+  { priority: 1, provider: geminiProvider({ apiKey: process.env.GEMINI_API_KEY }) },
+  { priority: 2, name: 'backup', provider: geminiProvider({ apiKey: process.env.GEMINI_BACKUP_API_KEY }) },
+  { priority: 3, provider: anthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY, model: 'claude-haiku-5-5' }) },
+]);
+```
+
+Lower `priority` goes first; links without one keep their array position after the numbered
+ones. Each model keeps its own provider's settings (output limit, provider options, prompt
+caching). When two links share a model id, the later ones are prefixed with the link's name
+(`backup/gemini-3.8-flash`) so quota rows and cooldowns stay separate. Quota tracking covers the
+models that have a `dailyLimit`; untracked paid models never appear in the quota badge.
+
+The same thing from the environment: `ASSISTANT_PROVIDER=gemini,anthropic` makes `providerFromEnv`
+build a chain in that order. To pick keys per request (per tenant, say), pass a function as
+`provider` to `createAssistantHandler`; it receives the context from `authorize`.
 
 The default free Gemini chain, strongest first, with requests per day:
 

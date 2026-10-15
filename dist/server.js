@@ -1,4 +1,4 @@
-import { DEFAULT_LIMITS, PACIFIC_TIME_ZONE, quotaDate, summarizeQuota, parseChatRequest, exhaustedModels, trackedModels, encodeEvent, ERROR_STATUS } from './chunk-AFYTUGAQ.js';
+import { PACIFIC_TIME_ZONE, DEFAULT_LIMITS, quotaDate, summarizeQuota, parseChatRequest, exhaustedModels, trackedModels, encodeEvent, ERROR_STATUS } from './chunk-AFYTUGAQ.js';
 export { ASSISTANT_ERROR_CODES, DEFAULT_LIMITS, ERROR_STATUS, PACIFIC_TIME_ZONE, REQUESTS_PER_QUESTION, createMemoryQuotaStore, encodeEvent, exhaustedModels, isAssistantErrorCode, nextQuotaReset, parseChatRequest, parseEventChunk, quotaDate, readEventStream, summarizeQuota, trackedModels, trimHistory } from './chunk-AFYTUGAQ.js';
 import { streamText, APICallError, tool, asSchema, RetryError } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -112,6 +112,95 @@ var ChainExhaustedError = class extends Error {
   }
   errors;
 };
+function modelSettings(provider, model) {
+  return {
+    maxOutputTokens: model.maxOutputTokens ?? provider.maxOutputTokens,
+    providerOptions: model.providerOptions ?? provider.providerOptions,
+    cacheSystemPrompt: model.cacheSystemPrompt ?? provider.cacheSystemPrompt
+  };
+}
+var GEMINI_FREE_MODELS = [
+  { model: "gemini-3.8-flash", dailyLimit: 20 },
+  { model: "gemini-3.7-flash", dailyLimit: 20 },
+  { model: "gemini-3.6-flash", dailyLimit: 20 },
+  { model: "gemini-3.5-flash-lite", dailyLimit: 500 },
+  { model: "gemini-3.1-flash-lite", dailyLimit: 500 },
+  { model: "gemini-2.5-flash", dailyLimit: 20 },
+  { model: "gemini-2.5-flash-lite", dailyLimit: 20 }
+];
+var DEFAULT_CLAUDE_MODEL = "claude-opus-5-5";
+function normalizeModels(models) {
+  return models.map((entry) => typeof entry === "string" ? { model: entry } : { ...entry });
+}
+function geminiProvider(options) {
+  const google = createGoogleGenerativeAI({ apiKey: options.apiKey ?? "", baseURL: options.baseURL });
+  const models = normalizeModels(options.models ?? GEMINI_FREE_MODELS);
+  return {
+    name: "gemini",
+    configured: Boolean(options.apiKey),
+    models: models.map((entry) => ({ ...entry, languageModel: google(entry.model) })),
+    quotaTimeZone: options.quotaTimeZone ?? PACIFIC_TIME_ZONE,
+    maxRetries: options.maxRetries ?? (models.length > 1 ? 0 : 2),
+    maxOutputTokens: options.maxOutputTokens,
+    providerOptions: options.providerOptions
+  };
+}
+function anthropicProvider(options) {
+  const anthropic = createAnthropic({ apiKey: options.apiKey ?? "", baseURL: options.baseURL });
+  const ids = [options.model ?? DEFAULT_CLAUDE_MODEL, ...options.fallbackModels ?? []];
+  return {
+    name: "anthropic",
+    configured: Boolean(options.apiKey),
+    models: ids.map((model) => ({ model, languageModel: anthropic(model) })),
+    quotaTimeZone: PACIFIC_TIME_ZONE,
+    maxRetries: options.maxRetries ?? 2,
+    maxOutputTokens: options.maxOutputTokens ?? 16e3,
+    providerOptions: options.providerOptions,
+    cacheSystemPrompt: true
+  };
+}
+function customProvider(options) {
+  return {
+    name: options.name,
+    configured: options.configured ?? options.models.length > 0,
+    models: options.models,
+    quotaTimeZone: options.quotaTimeZone ?? PACIFIC_TIME_ZONE,
+    maxRetries: options.maxRetries ?? (options.models.length > 1 ? 0 : 2),
+    maxOutputTokens: options.maxOutputTokens,
+    providerOptions: options.providerOptions,
+    cacheSystemPrompt: options.cacheSystemPrompt
+  };
+}
+function providerChain(links, options = {}) {
+  const normalized = links.map((link, index) => "provider" in link ? { ...link, index } : { provider: link, index }).filter((link) => link.provider.configured && link.provider.models.length > 0).sort((a, b) => rank(a.priority) - rank(b.priority) || a.index - b.index);
+  const seen = /* @__PURE__ */ new Set();
+  const models = [];
+  for (const link of normalized) {
+    const name = link.name ?? link.provider.name;
+    for (const model of link.provider.models) {
+      const id = seen.has(model.model) ? `${name}/${model.model}` : model.model;
+      seen.add(id);
+      models.push({ ...modelSettings(link.provider, model), ...model, model: id, provider: name });
+    }
+  }
+  return {
+    name: options.name ?? (normalized.map((link) => link.name ?? link.provider.name).join("+") || "chain"),
+    configured: models.length > 0,
+    models,
+    quotaTimeZone: options.quotaTimeZone ?? normalized[0]?.provider.quotaTimeZone ?? PACIFIC_TIME_ZONE,
+    maxRetries: options.maxRetries ?? (models.length > 1 ? 0 : normalized[0]?.provider.maxRetries ?? 2)
+  };
+}
+function rank(priority) {
+  return typeof priority === "number" && Number.isFinite(priority) ? priority : Number.POSITIVE_INFINITY;
+}
+function providerFromEnv(env, defaults = {}) {
+  const requested = (env.ASSISTANT_PROVIDER ?? "").split(",").map((name) => name.trim().toLowerCase()).filter((name) => name === "gemini" || name === "anthropic");
+  const model = env.ASSISTANT_MODEL?.trim() || void 0;
+  const build = (name) => name === "anthropic" ? anthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, model }) : geminiProvider({ apiKey: env.GEMINI_API_KEY, models: model ? [model] : void 0 });
+  if (requested.length > 1) return providerChain(requested.map(build));
+  return build(requested[0] ?? defaults.provider ?? (env.GEMINI_API_KEY ? "gemini" : "anthropic"));
+}
 function defineTool(tool) {
   return tool;
 }
@@ -180,11 +269,11 @@ function sdkTools(tools) {
   }
   return set;
 }
-function instructions(provider, system, context) {
+function instructions(cacheSystemPrompt, system, context) {
   const messages = [{
     role: "system",
     content: system,
-    ...provider.cacheSystemPrompt ? { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } } } : {}
+    ...cacheSystemPrompt ? { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } } } : {}
   }];
   if (context?.trim()) messages.push({ role: "system", content: context });
   return messages;
@@ -219,7 +308,7 @@ async function runTurn(options) {
   const maxRounds = options.maxRounds ?? MAX_ROUNDS;
   const skip = new Set(options.skipModels ?? []);
   const toolSet = sdkTools(tools);
-  const system = instructions(provider, options.system, options.context);
+  const systemFor = (entry) => instructions(modelSettings(provider, entry).cacheSystemPrompt, options.system, options.context);
   const turns = options.history.map((message2) => ({ message: message2, producer: null }));
   let textSent = options.history.length > 0 && options.history[options.history.length - 1].role === "assistant";
   async function runCalls(calls) {
@@ -263,15 +352,16 @@ async function runTurn(options) {
     for (const entry of candidates) {
       let roundText = false;
       let accepted = false;
+      const settings = modelSettings(provider, entry);
       try {
         const result = streamText({
           model: entry.languageModel,
-          instructions: system,
+          instructions: systemFor(entry),
           messages: messagesFor(turns, entry.model),
           tools: toolSet,
           maxRetries: provider.maxRetries,
-          ...provider.maxOutputTokens ? { maxOutputTokens: provider.maxOutputTokens } : {},
-          ...provider.providerOptions ? { providerOptions: provider.providerOptions } : {},
+          ...settings.maxOutputTokens ? { maxOutputTokens: settings.maxOutputTokens } : {},
+          ...settings.providerOptions ? { providerOptions: settings.providerOptions } : {},
           abortSignal: signal,
           // The AI SDK's default logs the whole error, whose requestBodyValues
           // hold the prompt, history and tool results. Errors still reach the
@@ -575,66 +665,7 @@ function createAssistantHandler(options) {
     }
   };
 }
-var GEMINI_FREE_MODELS = [
-  { model: "gemini-3.8-flash", dailyLimit: 20 },
-  { model: "gemini-3.7-flash", dailyLimit: 20 },
-  { model: "gemini-3.6-flash", dailyLimit: 20 },
-  { model: "gemini-3.5-flash-lite", dailyLimit: 500 },
-  { model: "gemini-3.1-flash-lite", dailyLimit: 500 },
-  { model: "gemini-2.5-flash", dailyLimit: 20 },
-  { model: "gemini-2.5-flash-lite", dailyLimit: 20 }
-];
-var DEFAULT_CLAUDE_MODEL = "claude-opus-5-5";
-function normalizeModels(models) {
-  return models.map((entry) => typeof entry === "string" ? { model: entry } : { ...entry });
-}
-function geminiProvider(options) {
-  const google = createGoogleGenerativeAI({ apiKey: options.apiKey ?? "", baseURL: options.baseURL });
-  const models = normalizeModels(options.models ?? GEMINI_FREE_MODELS);
-  return {
-    name: "gemini",
-    configured: Boolean(options.apiKey),
-    models: models.map((entry) => ({ ...entry, languageModel: google(entry.model) })),
-    quotaTimeZone: options.quotaTimeZone ?? PACIFIC_TIME_ZONE,
-    maxRetries: options.maxRetries ?? (models.length > 1 ? 0 : 2),
-    maxOutputTokens: options.maxOutputTokens,
-    providerOptions: options.providerOptions
-  };
-}
-function anthropicProvider(options) {
-  const anthropic = createAnthropic({ apiKey: options.apiKey ?? "", baseURL: options.baseURL });
-  const ids = [options.model ?? DEFAULT_CLAUDE_MODEL, ...options.fallbackModels ?? []];
-  return {
-    name: "anthropic",
-    configured: Boolean(options.apiKey),
-    models: ids.map((model) => ({ model, languageModel: anthropic(model) })),
-    quotaTimeZone: PACIFIC_TIME_ZONE,
-    maxRetries: options.maxRetries ?? 2,
-    maxOutputTokens: options.maxOutputTokens ?? 16e3,
-    providerOptions: options.providerOptions,
-    cacheSystemPrompt: true
-  };
-}
-function customProvider(options) {
-  return {
-    name: options.name,
-    configured: options.configured ?? options.models.length > 0,
-    models: options.models,
-    quotaTimeZone: options.quotaTimeZone ?? PACIFIC_TIME_ZONE,
-    maxRetries: options.maxRetries ?? (options.models.length > 1 ? 0 : 2),
-    maxOutputTokens: options.maxOutputTokens,
-    providerOptions: options.providerOptions,
-    cacheSystemPrompt: options.cacheSystemPrompt
-  };
-}
-function providerFromEnv(env, defaults = {}) {
-  const requested = env.ASSISTANT_PROVIDER?.trim().toLowerCase();
-  const name = requested === "anthropic" || requested === "gemini" ? requested : defaults.provider ?? (env.GEMINI_API_KEY ? "gemini" : "anthropic");
-  const model = env.ASSISTANT_MODEL?.trim() || void 0;
-  if (name === "anthropic") return anthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, model });
-  return geminiProvider({ apiKey: env.GEMINI_API_KEY, models: model ? [model] : void 0 });
-}
 
-export { AssistantError, CONFIRMATION_TTL_MS, COOLDOWN_MS, ChainExhaustedError, Cooldowns, DEFAULT_CLAUDE_MODEL, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, ToolError, anthropicProvider, createAssistantHandler, customProvider, defineTool, errorCode, fallbackReason, geminiProvider, isDailyQuotaError, modelsToTry, providerFromEnv, runTurn, signConfirmation, toBase64, verifyConfirmation };
+export { AssistantError, CONFIRMATION_TTL_MS, COOLDOWN_MS, ChainExhaustedError, Cooldowns, DEFAULT_CLAUDE_MODEL, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, ToolError, anthropicProvider, createAssistantHandler, customProvider, defineTool, errorCode, fallbackReason, geminiProvider, isDailyQuotaError, modelsToTry, providerChain, providerFromEnv, runTurn, signConfirmation, toBase64, verifyConfirmation };
 //# sourceMappingURL=server.js.map
 //# sourceMappingURL=server.js.map
