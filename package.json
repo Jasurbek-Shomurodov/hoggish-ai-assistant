@@ -6,7 +6,7 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/exampleschool23/hoggish-assistant.git"
+    "url": "git+https://github.com/Jasurbek-Shomurodov/hoggish-assistant.git"
   },
   "sideEffects": false,
   "files": [
