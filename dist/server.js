@@ -272,7 +272,12 @@ async function runTurn(options) {
           maxRetries: provider.maxRetries,
           ...provider.maxOutputTokens ? { maxOutputTokens: provider.maxOutputTokens } : {},
           ...provider.providerOptions ? { providerOptions: provider.providerOptions } : {},
-          abortSignal: signal
+          abortSignal: signal,
+          // The AI SDK's default logs the whole error, whose requestBodyValues
+          // hold the prompt, history and tool results. Errors still reach the
+          // stream below and the handler's content-free `onError`.
+          onError: () => {
+          }
         });
         const calls = [];
         let finishReason;

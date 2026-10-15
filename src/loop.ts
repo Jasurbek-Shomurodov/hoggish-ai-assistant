@@ -212,6 +212,10 @@ export async function runTurn(options: TurnOptions): Promise<void> {
           ...(provider.maxOutputTokens ? { maxOutputTokens: provider.maxOutputTokens } : {}),
           ...(provider.providerOptions ? { providerOptions: provider.providerOptions as never } : {}),
           abortSignal: signal,
+          // The AI SDK's default logs the whole error, whose requestBodyValues
+          // hold the prompt, history and tool results. Errors still reach the
+          // stream below and the handler's content-free `onError`.
+          onError: () => {},
         });
         const calls: ToolCall[] = [];
         let finishReason: FinishReason | undefined;

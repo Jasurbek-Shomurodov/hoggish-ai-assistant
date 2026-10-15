@@ -67,11 +67,11 @@ export function mockModel(id: string, responses: Response[]) {
   return model;
 }
 
-export function apiError(status: number, message = `HTTP ${status}`, responseBody?: string) {
+export function apiError(status: number, message = `HTTP ${status}`, responseBody?: string, requestBodyValues: unknown = {}) {
   return new APICallError({
     message,
     url: 'https://example.test/v1/models',
-    requestBodyValues: {},
+    requestBodyValues,
     statusCode: status,
     responseBody,
     isRetryable: false,
