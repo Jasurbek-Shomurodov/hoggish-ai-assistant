@@ -17,7 +17,7 @@ var ASSISTANT_ERROR_CODES = [
 function isAssistantErrorCode(value) {
   return typeof value === "string" && ASSISTANT_ERROR_CODES.includes(value);
 }
-var EVENT_TYPES = /* @__PURE__ */ new Set(["text", "tool", "file", "confirm", "error", "done"]);
+var EVENT_TYPES = /* @__PURE__ */ new Set(["text", "model", "usage", "tool", "file", "confirm", "error", "done"]);
 function isEvent(value) {
   return typeof value === "object" && value !== null && EVENT_TYPES.has(value.type);
 }
@@ -149,6 +149,14 @@ var DEFAULT_LIMITS = {
   maxAssistantChars: 8e3,
   maxHistoryMessages: 30
 };
+function estimateTokens(text) {
+  let latin = 0;
+  for (const char of text) {
+    if (char.charCodeAt(0) < 128) latin += 1;
+  }
+  const other = text.length - latin;
+  return Math.ceil(latin / 4 + other / 2.5);
+}
 function trimHistory(messages, limit = DEFAULT_LIMITS.maxHistoryMessages) {
   const recent = messages.slice(-Math.max(1, limit));
   const firstUser = recent.findIndex((message) => message.role === "user");
@@ -156,6 +164,22 @@ function trimHistory(messages, limit = DEFAULT_LIMITS.maxHistoryMessages) {
 }
 
 // src/react.tsx
+function contextStatus(usage, model, history) {
+  const contextWindow = model?.model === usage.model && model.contextWindow ? model.contextWindow : null;
+  const usedTokens = usage.inputTokens + usage.outputTokens;
+  if (!contextWindow) return { model: usage.model, contextWindow: null, usedTokens, tokensLeft: null, usedShare: null, messagesLeft: null };
+  const tokensLeft = Math.max(0, contextWindow - usedTokens);
+  const historyTokens = history.reduce((total, message) => total + estimateTokens(message.content), 0);
+  const perMessage = Math.max(50, history.length ? historyTokens / history.length : 0);
+  return {
+    model: usage.model,
+    contextWindow,
+    usedTokens,
+    tokensLeft,
+    usedShare: Math.min(1, usedTokens / contextWindow),
+    messagesLeft: Math.floor(tokensLeft / perMessage)
+  };
+}
 function base64ToBlob(data, mimeType) {
   const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
   return new Blob([bytes], { type: mimeType });
@@ -167,6 +191,11 @@ function useAssistantChat(options) {
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
   const [quota, setQuota] = useState(null);
+  const [answeredBy, setAnsweredBy] = useState(null);
+  const [nextModel, setNextModel] = useState(null);
+  const [context, setContext] = useState(null);
+  const answeredByRef = useRef(null);
+  const sentHistoryRef = useRef([]);
   const messagesRef = useRef([]);
   const optionsRef = useRef(options);
   const abortRef = useRef(null);
@@ -183,22 +212,29 @@ function useAssistantChat(options) {
     update((current) => current.map((entry) => entry.id === id ? change(entry) : entry));
   }, [update]);
   const refreshQuota = useCallback(async () => {
-    const { usageApi, context, credentials } = optionsRef.current;
+    const { usageApi, context: context2, credentials } = optionsRef.current;
     if (!usageApi) return;
     const fetcher = optionsRef.current.fetch ?? globalThis.fetch;
     try {
       const url = new URL(usageApi, globalThis.location?.href ?? "http://localhost");
-      if (context !== void 0) url.searchParams.set("context", JSON.stringify(context));
+      if (context2 !== void 0) url.searchParams.set("context", JSON.stringify(context2));
       const headers = typeof optionsRef.current.headers === "function" ? await optionsRef.current.headers() : optionsRef.current.headers;
       const response = await fetcher(url.toString(), { cache: "no-store", credentials, headers });
       const payload = response.ok ? await response.json() : null;
-      if (mountedRef.current) setQuota(payload?.quota ?? null);
+      if (mountedRef.current) {
+        setQuota(payload?.quota ?? null);
+        setNextModel(payload?.model ?? null);
+      }
     } catch {
-      if (mountedRef.current) setQuota(null);
+      if (mountedRef.current) {
+        setQuota(null);
+        setNextModel(null);
+      }
     }
   }, []);
   useEffect(() => {
     setQuota(null);
+    setNextModel(null);
     void refreshQuota();
   }, [contextKey, options.usageApi, refreshQuota]);
   useEffect(() => {
@@ -216,6 +252,18 @@ function useAssistantChat(options) {
       case "text":
         updateEntry(id, (entry) => ({ ...entry, content: entry.content + event.text, activeTool: void 0 }));
         break;
+      case "model": {
+        const { type: _type, ...info } = event;
+        answeredByRef.current = info;
+        if (mountedRef.current) setAnsweredBy(info);
+        updateEntry(id, (entry) => ({ ...entry, model: info }));
+        break;
+      }
+      case "usage": {
+        const { type: _type, ...usage } = event;
+        if (mountedRef.current) setContext(contextStatus(usage, answeredByRef.current, sentHistoryRef.current));
+        break;
+      }
       case "tool":
         updateEntry(id, (entry) => ({ ...entry, activeTool: event.name }));
         break;
@@ -295,6 +343,7 @@ function useAssistantChat(options) {
     if (!text || busyRef.current) return;
     update((current) => current.map((entry) => entry.confirmations.some((item) => item.status === "pending") ? { ...entry, confirmations: entry.confirmations.map((item) => item.status === "pending" ? { ...item, status: "cancelled" } : item) } : entry));
     const history = historyOf([...messagesRef.current, { id: "", role: "user", content: text, files: [], pending: false, confirmations: [] }]);
+    sentHistoryRef.current = history;
     const assistantId = randomId();
     update((current) => [
       ...current,
@@ -314,8 +363,9 @@ function useAssistantChat(options) {
     const proposal = entry.confirmations.find((item) => item.id === confirmationId);
     setConfirmationStatus(confirmationId, "running");
     updateEntry(entry.id, (current) => ({ ...current, pending: true, error: void 0, stopped: void 0 }));
+    sentHistoryRef.current = historyOf(messagesRef.current.slice(0, index + 1));
     const ok = await stream(entry.id, {
-      messages: historyOf(messagesRef.current.slice(0, index + 1)),
+      messages: sentHistoryRef.current,
       confirmation: { id: proposal.id, name: proposal.name, input: proposal.input, token: proposal.token }
     });
     setConfirmationStatus(confirmationId, ok ? "done" : "failed");
@@ -334,12 +384,15 @@ function useAssistantChat(options) {
     fileUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
     fileUrlsRef.current = [];
     messagesRef.current = [];
+    sentHistoryRef.current = [];
     setMessages([]);
     setBusy(false);
+    setContext(null);
   }, []);
+  const model = answeredBy ?? nextModel;
   return useMemo(
-    () => ({ messages, busy, send, stop, newChat, confirm, cancel, quota, refreshQuota }),
-    [messages, busy, send, stop, newChat, confirm, cancel, quota, refreshQuota]
+    () => ({ messages, busy, send, stop, newChat, confirm, cancel, quota, refreshQuota, model, context }),
+    [messages, busy, send, stop, newChat, confirm, cancel, quota, refreshQuota, model, context]
   );
 }
 function inline(text, components) {
@@ -385,6 +438,7 @@ function AssistantMarkdown({ text, components = {} }) {
 }
 export {
   AssistantMarkdown,
+  contextStatus,
   useAssistantChat
 };
 //# sourceMappingURL=react.js.map

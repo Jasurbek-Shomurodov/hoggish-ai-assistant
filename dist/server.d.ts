@@ -1,5 +1,5 @@
-import { AssistantErrorCode, RequestLimits, ChatMessage, AssistantEvent, ConfirmedCall } from './index.js';
-export { ASSISTANT_ERROR_CODES, ChatRequestBody, ConfirmationRequest, DEFAULT_LIMITS, ERROR_STATUS, encodeEvent, isAssistantErrorCode, parseChatRequest, parseEventChunk, readEventStream, trimHistory } from './index.js';
+import { AssistantErrorCode, RequestLimits, ModelInfo, ChatMessage, AssistantEvent, ConfirmedCall } from './index.js';
+export { ASSISTANT_ERROR_CODES, ChatRequestBody, ConfirmationRequest, DEFAULT_LIMITS, ERROR_STATUS, UsageInfo, encodeEvent, estimateTokens, isAssistantErrorCode, parseChatRequest, parseEventChunk, readEventStream, trimHistory } from './index.js';
 import { a as QuotaModel, b as QuotaSummary, Q as QuotaStore, R as RequestResult } from './quota-DBUQslDa.js';
 export { M as ModelQuota, c as ModelUsageRow, P as PACIFIC_TIME_ZONE, d as QuotaOptions, e as REQUESTS_PER_QUESTION, f as createMemoryQuotaStore, g as exhaustedModels, n as nextQuotaReset, q as quotaDate, s as summarizeQuota, t as trackedModels } from './quota-DBUQslDa.js';
 import { LanguageModel } from 'ai';
@@ -22,7 +22,20 @@ interface ChainModel extends QuotaModel, ModelSettings {
     languageModel: LanguageModel;
     /** Name of the provider this model came from, set by `providerChain`. */
     provider?: string;
+    /**
+     * Context window in tokens. Defaults to `contextWindowFor(model)`; the
+     * browser uses it to estimate how many more messages fit.
+     */
+    contextWindow?: number;
 }
+/**
+ * Known context windows (tokens) by model id prefix. Longest prefix wins.
+ * Gemini models take 1 048 576 tokens; the Claude 4.6+ and Claude 5 families
+ * 1 000 000; earlier Claude models 200 000.
+ */
+declare const CONTEXT_WINDOWS: ReadonlyArray<readonly [prefix: string, tokens: number]>;
+/** Context window for a model id, ignoring a `name/` prefix; undefined when unknown. */
+declare function contextWindowFor(model: string): number | undefined;
 /**
  * A configured provider: an ordered model chain (strongest first) plus call
  * settings. Build one with `geminiProvider`, `anthropicProvider`,
@@ -38,7 +51,9 @@ interface AssistantProvider extends ModelSettings {
     /** AI SDK retries per model. Chains default to 0 so fallback is immediate. */
     maxRetries: number;
 }
-type ModelInput = string | QuotaModel;
+type ModelInput = string | (QuotaModel & {
+    contextWindow?: number;
+});
 /**
  * Free-tier Gemini models, strongest first, with their requests-per-day
  * limits. Each model has its own quota, so the chain walks down as they run out.
@@ -176,10 +191,18 @@ interface AssistantHandlerOptions<CTX> {
     /** Logs failures. Defaults to a console.error without message content. */
     onError?: (error: unknown, info: ErrorInfo) => void;
 }
+/** Body of the usage endpoint (GET). */
+interface UsageResponse {
+    provider: string | null;
+    /** The model that would answer the next question; null when none is available. */
+    model: ModelInfo | null;
+    /** Null when the provider is not quota-tracked or usage cannot be read. */
+    quota: QuotaSummary | null;
+}
 interface AssistantHandler {
     /** POST: one chat turn, streamed as NDJSON events. */
     chat(request: Request): Promise<Response>;
-    /** GET: `{ quota }` for quota-tracked providers, else `{ quota: null }`. */
+    /** GET: `{ provider, model, quota }`; `quota` is null for untracked providers. */
     usage(request: Request): Promise<Response>;
     /** Routes POST to `chat`, GET to `usage` and answers OPTIONS (for one Edge Function). */
     handle(request: Request): Promise<Response>;
@@ -282,5 +305,5 @@ interface ConfirmationPayload {
 declare function signConfirmation(secret: string, payload: ConfirmationPayload, now?: number): Promise<string>;
 declare function verifyConfirmation(secret: string, token: unknown, payload: ConfirmationPayload, now?: number): Promise<boolean>;
 
-export { AssistantError, AssistantErrorCode, AssistantEvent, AssistantTools, CONFIRMATION_TTL_MS, COOLDOWN_MS, ChainExhaustedError, ChatMessage, ConfirmedCall, Cooldowns, DEFAULT_CLAUDE_MODEL, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, QuotaModel, QuotaStore, QuotaSummary, RequestLimits, RequestResult, anthropicProvider, createAssistantHandler, customProvider, errorCode, fallbackReason, geminiProvider, isDailyQuotaError, modelsToTry, providerChain, providerFromEnv, runTurn, signConfirmation, verifyConfirmation };
-export type { AnthropicProviderOptions, AssistantHandler, AssistantHandlerOptions, AssistantProvider, ChainLink, ChainModel, CustomProviderOptions, EnvSource, ErrorInfo, ErrorStage, FallbackReason, GeminiProviderOptions, ModelInput, ModelSettings, ProviderChainOptions, ProviderOptions, TurnOptions };
+export { AssistantError, AssistantErrorCode, AssistantEvent, AssistantTools, CONFIRMATION_TTL_MS, CONTEXT_WINDOWS, COOLDOWN_MS, ChainExhaustedError, ChatMessage, ConfirmedCall, Cooldowns, DEFAULT_CLAUDE_MODEL, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, ModelInfo, QuotaModel, QuotaStore, QuotaSummary, RequestLimits, RequestResult, anthropicProvider, contextWindowFor, createAssistantHandler, customProvider, errorCode, fallbackReason, geminiProvider, isDailyQuotaError, modelsToTry, providerChain, providerFromEnv, runTurn, signConfirmation, verifyConfirmation };
+export type { AnthropicProviderOptions, AssistantHandler, AssistantHandlerOptions, AssistantProvider, ChainLink, ChainModel, CustomProviderOptions, EnvSource, ErrorInfo, ErrorStage, FallbackReason, GeminiProviderOptions, ModelInput, ModelSettings, ProviderChainOptions, ProviderOptions, TurnOptions, UsageResponse };

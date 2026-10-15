@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createAssistantHandler } from '../src/handler';
-import { anthropicProvider, customProvider, geminiProvider, modelSettings, providerChain, providerFromEnv } from '../src/providers';
+import { anthropicProvider, contextWindowFor, customProvider, geminiProvider, modelSettings, providerChain, providerFromEnv } from '../src/providers';
 import { createMemoryQuotaStore, quotaDate } from '../src/quota';
 import { apiError, chatRequest, collect, dailyQuotaError, mockModel, textOf } from './helpers';
 
@@ -122,5 +122,25 @@ describe('providerFromEnv with a priority list', () => {
   it('still returns a single provider for one name', () => {
     expect(providerFromEnv({ ASSISTANT_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: 'a' }).name).toBe('anthropic');
     expect(providerFromEnv({ GEMINI_API_KEY: 'g' }).name).toBe('gemini');
+  });
+});
+
+describe('context windows', () => {
+  it('knows Gemini and Claude windows and leaves unknown models alone', () => {
+    expect(contextWindowFor('gemini-3.8-flash')).toBe(1_048_576);
+    expect(contextWindowFor('backup/gemini-2.5-flash-lite')).toBe(1_048_576);
+    expect(contextWindowFor('claude-opus-5-5')).toBe(1_000_000);
+    expect(contextWindowFor('claude-haiku-4-5')).toBe(200_000);
+    expect(contextWindowFor('gpt-5')).toBeUndefined();
+  });
+
+  it('attaches the window to provider models and keeps overrides', () => {
+    expect(geminiProvider({ apiKey: 'k' }).models[0]?.contextWindow).toBe(1_048_576);
+    expect(geminiProvider({ apiKey: 'k', models: [{ model: 'gemini-3.8-flash', contextWindow: 10 }] }).models[0]?.contextWindow).toBe(10);
+    expect(anthropicProvider({ apiKey: 'k' }).models[0]?.contextWindow).toBe(1_000_000);
+    const custom = customProvider({ name: 'x', models: [{ model: 'claude-haiku-4-5', languageModel: mockModel('m', []) }, { model: 'other', languageModel: mockModel('o', []) }] });
+    expect(custom.models.map((entry) => entry.contextWindow)).toEqual([200_000, undefined]);
+    const chain = providerChain([geminiProvider({ apiKey: 'k' }), anthropicProvider({ apiKey: 'k' })]);
+    expect(chain.models.at(-1)?.contextWindow).toBe(1_000_000);
   });
 });

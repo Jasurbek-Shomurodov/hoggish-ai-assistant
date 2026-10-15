@@ -11,6 +11,9 @@ the AI SDK leaves to you:
   Pacific time). Models recorded as used up are skipped, and you get a summary for a badge:
   requests left, about how many questions are left, the current model, whether a fallback model is
   answering, and the reset time. Storage is pluggable: in memory or Supabase.
+- **Model and context-window status.** Every answer reports which model produced it and how many
+  tokens the call used, so the UI can show the model's name and roughly how many more messages fit
+  in its context window.
 - **A framework-agnostic server handler** built on Web `Request`/`Response`. It works in Next.js
   route handlers and in Supabase Edge Functions (Deno). It runs a bounded tool loop and streams
   NDJSON events.
@@ -29,7 +32,7 @@ prompt and API key. Give each app its own Google project so each gets its own fr
 ```json
 {
   "dependencies": {
-    "hoggish-assistant": "github:exampleschool23/hoggish-assistant#v0.2.0"
+    "hoggish-assistant": "github:exampleschool23/hoggish-assistant#v0.3.0"
   }
 }
 ```
@@ -330,7 +333,14 @@ export function AssistantChat({ clubId, locale }: { clubId: string; locale: stri
 
   return (
     <div>
-      {chat.quota && <p>{chat.quota.questionsLeft} questions left today</p>}
+      <header>
+        {chat.model && <strong>{chat.model.model}</strong>}
+        {chat.quota && <span> · {chat.quota.questionsLeft} questions left today ({chat.quota.requestsLeft} of {chat.quota.requestsLimit} requests)</span>}
+        {chat.quota?.usingFallback && <span> · fallback model</span>}
+        {chat.context?.messagesLeft !== null && chat.context?.messagesLeft !== undefined && (
+          <span> · about {chat.context.messagesLeft} more messages fit ({Math.round((chat.context.usedShare ?? 0) * 100)}% of the context window used)</span>
+        )}
+      </header>
       {chat.messages.map((message) => (
         <div key={message.id}>
           <AssistantMarkdown text={message.content} />
@@ -356,10 +366,38 @@ export function AssistantChat({ clubId, locale }: { clubId: string; locale: stri
 }
 ```
 
-The hook returns `messages`, `busy`, `send`, `stop`, `newChat`, `confirm`, `cancel`, `quota` and
-`refreshQuota`. History lives in the browser and the server stores nothing. Sending a new question
-cancels any confirmations still pending. `AssistantMarkdown` takes a `components` prop if you want
-to add class names to its elements.
+The hook returns `messages`, `busy`, `send`, `stop`, `newChat`, `confirm`, `cancel`, `quota`,
+`refreshQuota`, `model` and `context`. History lives in the browser and the server stores nothing.
+Sending a new question cancels any confirmations still pending. `AssistantMarkdown` takes a
+`components` prop if you want to add class names to its elements.
+
+`model` is the model in use: the one that produced the latest answer, or, before the first answer,
+the one the usage endpoint says would answer next (`{ model, provider?, contextWindow? }`). Each
+assistant message also carries the `model` that produced it, so a fallback switch is visible.
+
+`context` describes the latest answer's context-window use and is `null` before the first answer:
+
+```ts
+interface ContextStatus {
+  model: string;
+  contextWindow: number | null;  // tokens the model accepts; null when unknown
+  usedTokens: number;            // prompt + output tokens of the last model call
+  tokensLeft: number | null;
+  usedShare: number | null;      // 0–1
+  messagesLeft: number | null;   // how many more messages of this chat's average size fit
+}
+```
+
+`usedTokens` comes from the provider's own usage report, so it covers the system prompt, tools and
+the whole history. `messagesLeft` is an estimate (about four characters per token for Latin text,
+two and a half for Cyrillic). Note that the hook also trims history to `maxHistoryMessages`
+(default 30), so with a million-token window the oldest messages drop out long before it fills;
+the number is mostly useful with small windows or very long messages.
+
+Context windows are attached to models by `contextWindowFor(modelId)`: 1 048 576 tokens for
+Gemini, 1 000 000 for the Claude 4.6+ and Claude 5 families, 200 000 for earlier Claude models.
+Pass `contextWindow` on a model (`{ model, dailyLimit, contextWindow }` or on a `ChainModel`) to
+override it or to set it for a model the table does not know.
 
 ## Tools and confirmations
 
@@ -401,8 +439,11 @@ Counting is best effort. A missing table or a failed write only turns the quota 
 never blocks an answer. To use another backend, implement `QuotaStore` with `load(day)` and
 `record(day, model, 'ok' | 'daily_limit')`.
 
-`handler.usage(request)` answers `{ provider, quota }`. The context comes from the `?context=` query
-parameter (JSON), which the hook sets. `quota` is `null` when the provider isn't quota-tracked:
+`handler.usage(request)` answers `{ provider, model, quota }`. The context comes from the
+`?context=` query parameter (JSON), which the hook sets. `model` is the model the next question
+would go to (the first in the chain that is neither used up nor cooling down), as
+`{ model, provider?, contextWindow? }`, or `null`. `quota` is `null` when the provider isn't
+quota-tracked:
 
 ```ts
 interface QuotaSummary {
@@ -432,7 +473,9 @@ The response is `application/x-ndjson`, one event per line:
 
 | Event                                                     | Meaning                                          |
 | --------------------------------------------------------- | ------------------------------------------------ |
+| `{ type: 'model', model, provider?, contextWindow? }`     | A model accepted a call (first event of each call) |
 | `{ type: 'text', text }`                                  | Append to the answer                             |
+| `{ type: 'usage', model, inputTokens, outputTokens }`     | Token usage of a finished model call             |
 | `{ type: 'tool', name, id }`                              | A tool started (show a status line)              |
 | `{ type: 'file', fileName, mimeType, data }`              | A generated file, base64                         |
 | `{ type: 'confirm', id, name, input, summary?, token? }`  | A proposed action waiting for Confirm/Cancel     |

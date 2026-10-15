@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { createAssistantHandler } from '../src/handler';
 import { createMemoryQuotaStore } from '../src/quota';
-import { AssistantMarkdown, useAssistantChat } from '../src/react';
+import { AssistantMarkdown, contextStatus, useAssistantChat } from '../src/react';
 import { defineTool } from '../src/tools';
 import { chainProvider, type Response as MockResponse } from './helpers';
 
@@ -82,6 +82,37 @@ describe('useAssistantChat', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:1');
   });
 
+  it('shows the model in use and how much of its context window is used', async () => {
+    const { fetchMock, provider } = setup([{ text: 'Hello.' }]);
+    provider.models[0]!.contextWindow = 1_000;
+    const { result } = renderHook(() => useAssistantChat({
+      api: '/api/assistant',
+      usageApi: '/api/assistant/usage',
+      context: { clubId: 'c1' },
+      fetch: fetchMock as typeof fetch,
+    }));
+    // Before the first answer the usage endpoint says which model would answer.
+    await waitFor(() => expect(result.current.model).toEqual({ model: 'm1', provider: 'mock', contextWindow: 1_000 }));
+    expect(result.current.context).toBeNull();
+
+    await act(() => result.current.send('Hi there, how are you?'));
+    expect(result.current.messages[1]?.model).toEqual({ model: 'm1', provider: 'mock', contextWindow: 1_000 });
+    expect(result.current.model?.model).toBe('m1');
+    // The mock reports 10 input and 5 output tokens; one 22-character message is ~6 tokens, floored at 50.
+    expect(result.current.context).toEqual({
+      model: 'm1',
+      contextWindow: 1_000,
+      usedTokens: 15,
+      tokensLeft: 985,
+      usedShare: 0.015,
+      messagesLeft: 19,
+    });
+
+    act(() => result.current.newChat());
+    expect(result.current.context).toBeNull();
+    expect(result.current.model?.model).toBe('m1');
+  });
+
   it('shows server error codes', async () => {
     const { fetchMock } = setup([{ text: 'x' }]);
     const { result } = renderHook(() => useAssistantChat({ api: '/api/assistant', fetch: fetchMock as typeof fetch }));
@@ -141,6 +172,24 @@ describe('useAssistantChat', () => {
     expect(result.current.messages[1]).toMatchObject({ stopped: true, pending: false });
     expect(result.current.busy).toBe(false);
     void release;
+  });
+});
+
+describe('contextStatus', () => {
+  const history = [{ role: 'user' as const, content: 'x'.repeat(400) }, { role: 'assistant' as const, content: 'y'.repeat(800) }];
+
+  it('estimates messages left from the window and the average message size', () => {
+    const status = contextStatus({ model: 'm', inputTokens: 5_000, outputTokens: 1_000 }, { model: 'm', contextWindow: 20_000 }, history);
+    expect(status).toEqual({ model: 'm', contextWindow: 20_000, usedTokens: 6_000, tokensLeft: 14_000, usedShare: 0.3, messagesLeft: 93 });
+  });
+
+  it('reports nulls when the window is unknown or belongs to another model', () => {
+    expect(contextStatus({ model: 'm', inputTokens: 5, outputTokens: 1 }, { model: 'other', contextWindow: 10 }, history)).toMatchObject({ contextWindow: null, messagesLeft: null, usedTokens: 6 });
+    expect(contextStatus({ model: 'm', inputTokens: 5, outputTokens: 1 }, null, history).tokensLeft).toBeNull();
+  });
+
+  it('never goes negative when the window is already full', () => {
+    expect(contextStatus({ model: 'm', inputTokens: 30, outputTokens: 0 }, { model: 'm', contextWindow: 20 }, history)).toMatchObject({ tokensLeft: 0, usedShare: 1, messagesLeft: 0 });
   });
 });
 

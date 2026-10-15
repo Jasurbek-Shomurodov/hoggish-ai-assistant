@@ -1,6 +1,6 @@
 {
   "name": "hoggish-assistant",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Shared AI chat assistant: provider fallback chain, quota tracking, confirm-before-action tool loop, NDJSON streaming, React hook, Markdown and Excel helpers.",
   "license": "MIT",
   "type": "module",

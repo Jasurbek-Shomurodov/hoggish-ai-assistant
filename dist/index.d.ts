@@ -21,10 +21,29 @@ interface ConfirmationRequest {
     /** HMAC over id, name and input when the handler has a `confirmationSecret`. */
     token?: string;
 }
+/** The model answering a model call, sent when it accepts the call. */
+interface ModelInfo {
+    /** Model id (`gemini-3.8-flash`, `claude-opus-5-5`, `backup/gemini-3.8-flash`…). */
+    model: string;
+    provider?: string;
+    /** Context window in tokens, when known. */
+    contextWindow?: number;
+}
+/** Token usage of one finished model call. */
+interface UsageInfo {
+    model: string;
+    /** Prompt tokens of this call: system prompt, tools and the whole history. */
+    inputTokens: number;
+    outputTokens: number;
+}
 type AssistantEvent = {
     type: 'text';
     text: string;
-} | {
+} | ({
+    type: 'model';
+} & ModelInfo) | ({
+    type: 'usage';
+} & UsageInfo) | {
     type: 'tool';
     name: string;
     id?: string;
@@ -82,10 +101,16 @@ interface RequestLimits {
     maxHistoryMessages: number;
 }
 declare const DEFAULT_LIMITS: RequestLimits;
+/**
+ * Rough token count of a text, for context-window estimates in the browser:
+ * about four characters per token for Latin text, closer to two or three for
+ * Cyrillic. Deliberately a little pessimistic.
+ */
+declare function estimateTokens(text: string): number;
 /** Keeps the newest messages that fit, still starting with a user turn. */
 declare function trimHistory<T extends ChatMessage>(messages: readonly T[], limit?: number): T[];
 /** Returns the validated body, or null when it is malformed. */
 declare function parseChatRequest(body: unknown, limits?: RequestLimits): ChatRequestBody | null;
 
-export { ASSISTANT_ERROR_CODES, DEFAULT_LIMITS, ERROR_STATUS, encodeEvent, isAssistantErrorCode, parseChatRequest, parseEventChunk, readEventStream, trimHistory };
-export type { AssistantErrorCode, AssistantEvent, ChatMessage, ChatRequestBody, ConfirmationRequest, ConfirmedCall, RequestLimits };
+export { ASSISTANT_ERROR_CODES, DEFAULT_LIMITS, ERROR_STATUS, encodeEvent, estimateTokens, isAssistantErrorCode, parseChatRequest, parseEventChunk, readEventStream, trimHistory };
+export type { AssistantErrorCode, AssistantEvent, ChatMessage, ChatRequestBody, ConfirmationRequest, ConfirmedCall, ModelInfo, RequestLimits, UsageInfo };

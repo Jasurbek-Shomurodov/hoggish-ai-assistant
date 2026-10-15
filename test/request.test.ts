@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseChatRequest, trimHistory } from '../src/request';
+import { estimateTokens, parseChatRequest, trimHistory } from '../src/request';
 
 describe('parseChatRequest', () => {
   it('accepts a question and keeps context', () => {
@@ -48,5 +48,14 @@ describe('trimHistory', () => {
       { role: 'assistant', content: '2' },
       { role: 'user', content: '3' },
     ], 2)).toEqual([{ role: 'user', content: '3' }]);
+  });
+});
+
+describe('estimateTokens', () => {
+  it('counts about four Latin characters or two and a half other characters per token', () => {
+    expect(estimateTokens('')).toBe(0);
+    expect(estimateTokens('a'.repeat(400))).toBe(100);
+    expect(estimateTokens('я'.repeat(250))).toBe(100);
+    expect(estimateTokens('abcd' + 'яя')).toBe(2);
   });
 });

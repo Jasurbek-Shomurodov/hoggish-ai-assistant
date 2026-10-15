@@ -1,5 +1,5 @@
-import { PACIFIC_TIME_ZONE, DEFAULT_LIMITS, quotaDate, summarizeQuota, parseChatRequest, exhaustedModels, trackedModels, encodeEvent, ERROR_STATUS } from './chunk-AFYTUGAQ.js';
-export { ASSISTANT_ERROR_CODES, DEFAULT_LIMITS, ERROR_STATUS, PACIFIC_TIME_ZONE, REQUESTS_PER_QUESTION, createMemoryQuotaStore, encodeEvent, exhaustedModels, isAssistantErrorCode, nextQuotaReset, parseChatRequest, parseEventChunk, quotaDate, readEventStream, summarizeQuota, trackedModels, trimHistory } from './chunk-AFYTUGAQ.js';
+import { PACIFIC_TIME_ZONE, DEFAULT_LIMITS, quotaDate, summarizeQuota, parseChatRequest, exhaustedModels, trackedModels, encodeEvent, ERROR_STATUS } from './chunk-2WTQ3SDZ.js';
+export { ASSISTANT_ERROR_CODES, DEFAULT_LIMITS, ERROR_STATUS, PACIFIC_TIME_ZONE, REQUESTS_PER_QUESTION, createMemoryQuotaStore, encodeEvent, estimateTokens, exhaustedModels, isAssistantErrorCode, nextQuotaReset, parseChatRequest, parseEventChunk, quotaDate, readEventStream, summarizeQuota, trackedModels, trimHistory } from './chunk-2WTQ3SDZ.js';
 import { streamText, APICallError, tool, asSchema, RetryError } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -112,6 +112,23 @@ var ChainExhaustedError = class extends Error {
   }
   errors;
 };
+var CONTEXT_WINDOWS = [
+  ["gemini-", 1048576],
+  ["claude-haiku-4-5", 2e5],
+  ["claude-sonnet-4-5", 2e5],
+  ["claude-opus-4-5", 2e5],
+  ["claude-opus-4-1", 2e5],
+  ["claude-3", 2e5],
+  ["claude-", 1e6]
+];
+function contextWindowFor(model) {
+  const id = model.slice(model.lastIndexOf("/") + 1);
+  let best;
+  for (const entry of CONTEXT_WINDOWS) {
+    if (id.startsWith(entry[0]) && (!best || entry[0].length > best[0].length)) best = entry;
+  }
+  return best?.[1];
+}
 function modelSettings(provider, model) {
   return {
     maxOutputTokens: model.maxOutputTokens ?? provider.maxOutputTokens,
@@ -132,13 +149,17 @@ var DEFAULT_CLAUDE_MODEL = "claude-opus-5-5";
 function normalizeModels(models) {
   return models.map((entry) => typeof entry === "string" ? { model: entry } : { ...entry });
 }
+function withContextWindow(entry) {
+  const contextWindow = entry.contextWindow ?? contextWindowFor(entry.model);
+  return contextWindow ? { ...entry, contextWindow } : entry;
+}
 function geminiProvider(options) {
   const google = createGoogleGenerativeAI({ apiKey: options.apiKey ?? "", baseURL: options.baseURL });
   const models = normalizeModels(options.models ?? GEMINI_FREE_MODELS);
   return {
     name: "gemini",
     configured: Boolean(options.apiKey),
-    models: models.map((entry) => ({ ...entry, languageModel: google(entry.model) })),
+    models: models.map((entry) => withContextWindow({ ...entry, languageModel: google(entry.model) })),
     quotaTimeZone: options.quotaTimeZone ?? PACIFIC_TIME_ZONE,
     maxRetries: options.maxRetries ?? (models.length > 1 ? 0 : 2),
     maxOutputTokens: options.maxOutputTokens,
@@ -151,7 +172,7 @@ function anthropicProvider(options) {
   return {
     name: "anthropic",
     configured: Boolean(options.apiKey),
-    models: ids.map((model) => ({ model, languageModel: anthropic(model) })),
+    models: ids.map((model) => withContextWindow({ model, languageModel: anthropic(model) })),
     quotaTimeZone: PACIFIC_TIME_ZONE,
     maxRetries: options.maxRetries ?? 2,
     maxOutputTokens: options.maxOutputTokens ?? 16e3,
@@ -163,7 +184,7 @@ function customProvider(options) {
   return {
     name: options.name,
     configured: options.configured ?? options.models.length > 0,
-    models: options.models,
+    models: options.models.map(withContextWindow),
     quotaTimeZone: options.quotaTimeZone ?? PACIFIC_TIME_ZONE,
     maxRetries: options.maxRetries ?? (options.models.length > 1 ? 0 : 2),
     maxOutputTokens: options.maxOutputTokens,
@@ -375,6 +396,12 @@ async function runTurn(options) {
           if (!accepted && RESPONSE_PARTS.has(part.type)) {
             accepted = true;
             options.onModelRequest?.(entry.model, "ok");
+            send({
+              type: "model",
+              model: entry.model,
+              ...entry.provider ?? provider.name ? { provider: entry.provider ?? provider.name } : {},
+              ...entry.contextWindow ? { contextWindow: entry.contextWindow } : {}
+            });
           }
           switch (part.type) {
             case "text-delta":
@@ -390,6 +417,9 @@ ${part.text}` : part.text });
               break;
             case "finish-step":
               finishReason = part.finishReason;
+              if (typeof part.usage.inputTokens === "number") {
+                send({ type: "usage", model: entry.model, inputTokens: part.usage.inputTokens, outputTokens: part.usage.outputTokens ?? 0 });
+              }
               break;
             case "error":
               throw part.error;
@@ -529,6 +559,19 @@ function createAssistantHandler(options) {
       requestsPerQuestion: options.requestsPerQuestion
     });
   }
+  async function nextModel(provider) {
+    if (!provider.configured) return null;
+    const rows = await loadQuota(provider, quotaDate(/* @__PURE__ */ new Date(), provider.quotaTimeZone));
+    const skip = rows ? exhaustedModels(provider.models, rows) : [];
+    const entry = modelsToTry(provider.models, new Set(skip), cooldowns)[0];
+    if (!entry) return null;
+    const providerName = entry.provider ?? provider.name;
+    return {
+      model: entry.model,
+      ...providerName ? { provider: providerName } : {},
+      ...entry.contextWindow ? { contextWindow: entry.contextWindow } : {}
+    };
+  }
   async function checkConfirmation(confirmation, tools) {
     const definition = tools[confirmation.name];
     if (!definition?.needsConfirmation) return "INVALID_REQUEST";
@@ -642,10 +685,12 @@ function createAssistantHandler(options) {
     if (!access.ok) return access.response;
     try {
       const provider = await resolveProvider(access.ctx);
-      return json({ provider: provider.name, quota: await quota(provider) });
+      const body = { provider: provider.name, model: await nextModel(provider), quota: await quota(provider) };
+      return json(body);
     } catch (error) {
       onError(error, { stage: "quota" });
-      return json({ provider: null, quota: null });
+      const body = { provider: null, model: null, quota: null };
+      return json(body);
     }
   }
   async function handle(request) {
@@ -666,6 +711,6 @@ function createAssistantHandler(options) {
   };
 }
 
-export { AssistantError, CONFIRMATION_TTL_MS, COOLDOWN_MS, ChainExhaustedError, Cooldowns, DEFAULT_CLAUDE_MODEL, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, ToolError, anthropicProvider, createAssistantHandler, customProvider, defineTool, errorCode, fallbackReason, geminiProvider, isDailyQuotaError, modelsToTry, providerChain, providerFromEnv, runTurn, signConfirmation, toBase64, verifyConfirmation };
+export { AssistantError, CONFIRMATION_TTL_MS, CONTEXT_WINDOWS, COOLDOWN_MS, ChainExhaustedError, Cooldowns, DEFAULT_CLAUDE_MODEL, FOREIGN_THOUGHT_SIGNATURE, GEMINI_FREE_MODELS, MAX_ROUNDS, ToolError, anthropicProvider, contextWindowFor, createAssistantHandler, customProvider, defineTool, errorCode, fallbackReason, geminiProvider, isDailyQuotaError, modelsToTry, providerChain, providerFromEnv, runTurn, signConfirmation, toBase64, verifyConfirmation };
 //# sourceMappingURL=server.js.map
 //# sourceMappingURL=server.js.map

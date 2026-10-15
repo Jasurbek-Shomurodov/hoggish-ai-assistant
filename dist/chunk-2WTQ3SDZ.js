@@ -22,7 +22,7 @@ var ERROR_STATUS = {
 function isAssistantErrorCode(value) {
   return typeof value === "string" && ASSISTANT_ERROR_CODES.includes(value);
 }
-var EVENT_TYPES = /* @__PURE__ */ new Set(["text", "tool", "file", "confirm", "error", "done"]);
+var EVENT_TYPES = /* @__PURE__ */ new Set(["text", "model", "usage", "tool", "file", "confirm", "error", "done"]);
 function isEvent(value) {
   return typeof value === "object" && value !== null && EVENT_TYPES.has(value.type);
 }
@@ -161,6 +161,14 @@ var DEFAULT_LIMITS = {
 };
 var HARD_MESSAGE_CAP = 500;
 var TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
+function estimateTokens(text) {
+  let latin = 0;
+  for (const char of text) {
+    if (char.charCodeAt(0) < 128) latin += 1;
+  }
+  const other = text.length - latin;
+  return Math.ceil(latin / 4 + other / 2.5);
+}
 function trimHistory(messages, limit = DEFAULT_LIMITS.maxHistoryMessages) {
   const recent = messages.slice(-Math.max(1, limit));
   const firstUser = recent.findIndex((message) => message.role === "user");
@@ -200,6 +208,6 @@ function parseChatRequest(body, limits = DEFAULT_LIMITS) {
   return { messages: history, context: raw.context, ...confirmation ? { confirmation } : {} };
 }
 
-export { ASSISTANT_ERROR_CODES, DEFAULT_LIMITS, ERROR_STATUS, PACIFIC_TIME_ZONE, REQUESTS_PER_QUESTION, createMemoryQuotaStore, encodeEvent, exhaustedModels, isAssistantErrorCode, nextQuotaReset, parseChatRequest, parseEventChunk, quotaDate, readEventStream, summarizeQuota, trackedModels, trimHistory };
-//# sourceMappingURL=chunk-AFYTUGAQ.js.map
-//# sourceMappingURL=chunk-AFYTUGAQ.js.map
+export { ASSISTANT_ERROR_CODES, DEFAULT_LIMITS, ERROR_STATUS, PACIFIC_TIME_ZONE, REQUESTS_PER_QUESTION, createMemoryQuotaStore, encodeEvent, estimateTokens, exhaustedModels, isAssistantErrorCode, nextQuotaReset, parseChatRequest, parseEventChunk, quotaDate, readEventStream, summarizeQuota, trackedModels, trimHistory };
+//# sourceMappingURL=chunk-2WTQ3SDZ.js.map
+//# sourceMappingURL=chunk-2WTQ3SDZ.js.map
