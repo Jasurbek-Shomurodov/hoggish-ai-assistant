@@ -27,7 +27,7 @@ run these steps themselves.
 2. `npm run check`, then commit everything including `dist/`.
 3. Tag `vX.Y.Z` and push `main` and the tag.
 
-Pushing: the repo is `Jasurbek-Shomurodov/hoggish-assistant`; `origin` is the SSH alias
+Pushing: the repo is `Jasurbek-Shomurodov/hoggish-ai-assistant`; `origin` is the SSH alias
 `github-dangerhoggish` (key `~/.ssh/dangerhoggish`, GitHub account Jasurbek-Shomurodov). Keep it
 SSH; do not switch the remote to HTTPS or change global git config.
 
