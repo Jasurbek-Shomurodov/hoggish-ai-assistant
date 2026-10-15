@@ -21,6 +21,36 @@ export interface ChainModel extends QuotaModel, ModelSettings {
   languageModel: LanguageModel;
   /** Name of the provider this model came from, set by `providerChain`. */
   provider?: string;
+  /**
+   * Context window in tokens. Defaults to `contextWindowFor(model)`; the
+   * browser uses it to estimate how many more messages fit.
+   */
+  contextWindow?: number;
+}
+
+/**
+ * Known context windows (tokens) by model id prefix. Longest prefix wins.
+ * Gemini models take 1 048 576 tokens; the Claude 4.6+ and Claude 5 families
+ * 1 000 000; earlier Claude models 200 000.
+ */
+export const CONTEXT_WINDOWS: ReadonlyArray<readonly [prefix: string, tokens: number]> = [
+  ['gemini-', 1_048_576],
+  ['claude-haiku-4-5', 200_000],
+  ['claude-sonnet-4-5', 200_000],
+  ['claude-opus-4-5', 200_000],
+  ['claude-opus-4-1', 200_000],
+  ['claude-3', 200_000],
+  ['claude-', 1_000_000],
+];
+
+/** Context window for a model id, ignoring a `name/` prefix; undefined when unknown. */
+export function contextWindowFor(model: string): number | undefined {
+  const id = model.slice(model.lastIndexOf('/') + 1);
+  let best: readonly [string, number] | undefined;
+  for (const entry of CONTEXT_WINDOWS) {
+    if (id.startsWith(entry[0]) && (!best || entry[0].length > best[0].length)) best = entry;
+  }
+  return best?.[1];
 }
 
 /**
@@ -48,7 +78,7 @@ export function modelSettings(provider: AssistantProvider, model: ChainModel): M
   };
 }
 
-export type ModelInput = string | QuotaModel;
+export type ModelInput = string | (QuotaModel & { contextWindow?: number });
 
 /**
  * Free-tier Gemini models, strongest first, with their requests-per-day
@@ -66,8 +96,13 @@ export const GEMINI_FREE_MODELS: readonly Required<QuotaModel>[] = [
 
 export const DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5';
 
-function normalizeModels(models: readonly ModelInput[]): QuotaModel[] {
+function normalizeModels(models: readonly ModelInput[]): Array<QuotaModel & { contextWindow?: number }> {
   return models.map((entry) => (typeof entry === 'string' ? { model: entry } : { ...entry }));
+}
+
+function withContextWindow<T extends { model: string; contextWindow?: number }>(entry: T): T {
+  const contextWindow = entry.contextWindow ?? contextWindowFor(entry.model);
+  return contextWindow ? { ...entry, contextWindow } : entry;
 }
 
 export interface GeminiProviderOptions {
@@ -90,7 +125,7 @@ export function geminiProvider(options: GeminiProviderOptions): AssistantProvide
   return {
     name: 'gemini',
     configured: Boolean(options.apiKey),
-    models: models.map((entry) => ({ ...entry, languageModel: google(entry.model) })),
+    models: models.map((entry) => withContextWindow({ ...entry, languageModel: google(entry.model) })),
     quotaTimeZone: options.quotaTimeZone ?? PACIFIC_TIME_ZONE,
     maxRetries: options.maxRetries ?? (models.length > 1 ? 0 : 2),
     maxOutputTokens: options.maxOutputTokens,
@@ -117,7 +152,7 @@ export function anthropicProvider(options: AnthropicProviderOptions): AssistantP
   return {
     name: 'anthropic',
     configured: Boolean(options.apiKey),
-    models: ids.map((model) => ({ model, languageModel: anthropic(model) })),
+    models: ids.map((model) => withContextWindow({ model, languageModel: anthropic(model) })),
     quotaTimeZone: PACIFIC_TIME_ZONE,
     maxRetries: options.maxRetries ?? 2,
     maxOutputTokens: options.maxOutputTokens ?? 16_000,
@@ -142,7 +177,7 @@ export function customProvider(options: CustomProviderOptions): AssistantProvide
   return {
     name: options.name,
     configured: options.configured ?? options.models.length > 0,
-    models: options.models,
+    models: options.models.map(withContextWindow),
     quotaTimeZone: options.quotaTimeZone ?? PACIFIC_TIME_ZONE,
     maxRetries: options.maxRetries ?? (options.models.length > 1 ? 0 : 2),
     maxOutputTokens: options.maxOutputTokens,

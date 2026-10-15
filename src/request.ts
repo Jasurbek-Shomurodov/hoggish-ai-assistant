@@ -42,6 +42,20 @@ export const DEFAULT_LIMITS: RequestLimits = {
 const HARD_MESSAGE_CAP = 500;
 const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
 
+/**
+ * Rough token count of a text, for context-window estimates in the browser:
+ * about four characters per token for Latin text, closer to two or three for
+ * Cyrillic. Deliberately a little pessimistic.
+ */
+export function estimateTokens(text: string): number {
+  let latin = 0;
+  for (const char of text) {
+    if (char.charCodeAt(0) < 0x80) latin += 1;
+  }
+  const other = text.length - latin;
+  return Math.ceil(latin / 4 + other / 2.5);
+}
+
 /** Keeps the newest messages that fit, still starting with a user turn. */
 export function trimHistory<T extends ChatMessage>(messages: readonly T[], limit = DEFAULT_LIMITS.maxHistoryMessages): T[] {
   const recent = messages.slice(-Math.max(1, limit));

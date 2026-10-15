@@ -28,6 +28,23 @@ describe('chat handler basics', () => {
     expect(provider.mocks[0]!.doStreamCalls).toHaveLength(1);
   });
 
+  it('reports the answering model and its token usage', async () => {
+    const provider = chainProvider([{ id: 'm1', responses: [{ text: 'hi' }] }]);
+    provider.models[0]!.contextWindow = 1_000;
+    const events = await collect(await handlerFor(provider).chat(chatRequest(question)));
+    expect(events[0]).toEqual({ type: 'model', model: 'm1', provider: 'mock', contextWindow: 1_000 });
+    expect(events).toContainEqual({ type: 'usage', model: 'm1', inputTokens: 10, outputTokens: 5 });
+  });
+
+  it('reports the fallback model when the first one fails', async () => {
+    const provider = chainProvider([
+      { id: 'm1', responses: [apiError(503)] },
+      { id: 'm2', responses: [{ text: 'hi' }] },
+    ]);
+    const events = await collect(await handlerFor(provider).chat(chatRequest(question)));
+    expect(events.filter((event) => event.type === 'model').map((event) => (event as { model: string }).model)).toEqual(['m2']);
+  });
+
   it('sends system prompt and per-request context as instructions', async () => {
     const provider = chainProvider([{ id: 'm1', responses: [{ text: 'ok' }] }]);
     await collect(await handlerFor(provider).chat(chatRequest(question)));
@@ -382,7 +399,24 @@ describe('usage endpoint', () => {
   it('returns null quota for untracked providers', async () => {
     const provider = chainProvider([{ id: 'paid', responses: [{ text: 'x' }] }]);
     const handler = handlerFor(provider, { quotaStore: createMemoryQuotaStore() });
-    expect(await (await handler.usage(new Request('https://app.test/usage'))).json()).toEqual({ provider: 'mock', quota: null });
+    expect(await (await handler.usage(new Request('https://app.test/usage'))).json()).toEqual({
+      provider: 'mock',
+      model: { model: 'paid', provider: 'mock' },
+      quota: null,
+    });
+  });
+
+  it('names the model that would answer next, skipping used-up and cooling models', async () => {
+    const store = createMemoryQuotaStore();
+    await store.record(quotaDate(), 'strong', 'daily_limit');
+    const provider = chainProvider([
+      { id: 'strong', dailyLimit: 20, responses: [{ text: 'x' }] },
+      { id: 'light', dailyLimit: 500, responses: [{ text: 'x' }] },
+    ]);
+    provider.models[1]!.contextWindow = 1_000;
+    const handler = handlerFor(provider, { quotaStore: store });
+    const body = await (await handler.usage(new Request('https://app.test/usage'))).json() as { model: unknown };
+    expect(body.model).toEqual({ model: 'light', provider: 'mock', contextWindow: 1_000 });
   });
 
   it('routes methods in handle()', async () => {

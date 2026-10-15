@@ -27,12 +27,11 @@ run these steps themselves.
 2. `npm run check`, then commit everything including `dist/`.
 3. Tag `vX.Y.Z` and push `main` and the tag.
 
-Pushing: the `origin` SSH alias (`github-dangerhoggish`) authenticates as a GitHub account without
-access to this repo. Push with the `gh` CLI's active account (`exampleschool23`) over HTTPS instead,
-without changing the remote or global git config:
+Pushing: `origin` is the SSH alias `github-dangerhoggish` (key `~/.ssh/dangerhoggish`). Keep it
+SSH; do not switch the remote to HTTPS or change global git config.
 
 ```bash
-git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push https://github.com/exampleschool23/hoggish-assistant.git main vX.Y.Z
+git push origin main vX.Y.Z
 ```
 
 Skills in `.claude/skills/`: `/cr` code review, `/dr` design review, `/qa` checks and release checklist.

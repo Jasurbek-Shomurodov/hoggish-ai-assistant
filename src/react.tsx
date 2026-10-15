@@ -1,8 +1,8 @@
 import { Fragment, createElement, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { isAssistantErrorCode, readEventStream, type AssistantErrorCode, type AssistantEvent, type ConfirmationRequest } from './events';
+import { isAssistantErrorCode, readEventStream, type AssistantErrorCode, type AssistantEvent, type ConfirmationRequest, type ModelInfo, type UsageInfo } from './events';
 import { parseInline, parseMarkdown, type MarkdownBlock } from './markdown';
 import type { QuotaSummary } from './quota';
-import { DEFAULT_LIMITS, trimHistory, type ChatMessage } from './request';
+import { DEFAULT_LIMITS, estimateTokens, trimHistory, type ChatMessage } from './request';
 
 /** Server error codes plus `NETWORK` when the request itself failed. */
 export type ChatErrorCode = AssistantErrorCode | 'NETWORK';
@@ -34,6 +34,28 @@ export interface ChatEntry {
   stopped?: boolean;
   /** Actions the model proposed that wait for Confirm/Cancel. */
   confirmations: ChatConfirmation[];
+  /** The model that produced this answer (the last one, if a fallback switched mid-answer). */
+  model?: ModelInfo;
+}
+
+/** How full the current model's context window is, for a header or badge. */
+export interface ContextStatus {
+  model: string;
+  /** Tokens the model accepts; null when unknown for this model. */
+  contextWindow: number | null;
+  /** Prompt tokens of the last model call: system prompt, tools and history. */
+  usedTokens: number;
+  /** Tokens still free in the window; null when the window is unknown. */
+  tokensLeft: number | null;
+  /** 0–1 share of the window in use; null when the window is unknown. */
+  usedShare: number | null;
+  /**
+   * Estimate of how many more messages of this conversation's average size
+   * fit before the window is full; null when the window is unknown. The hook
+   * also trims history to `maxHistoryMessages`, so older messages drop out
+   * long before a large window fills.
+   */
+  messagesLeft: number | null;
 }
 
 export interface UseAssistantChatOptions {
@@ -65,6 +87,31 @@ export interface UseAssistantChat {
   cancel: (confirmationId: string) => void;
   quota: QuotaSummary | null;
   refreshQuota: () => Promise<void>;
+  /**
+   * The model in use: the one that produced the latest answer, else the one
+   * the usage endpoint says would answer next. Null until either is known.
+   */
+  model: ModelInfo | null;
+  /** Context-window usage of the latest answer; null before the first answer. */
+  context: ContextStatus | null;
+}
+
+/** Builds the context status from a model's usage report and the history that was sent. */
+export function contextStatus(usage: UsageInfo, model: ModelInfo | null, history: readonly ChatMessage[]): ContextStatus {
+  const contextWindow = model?.model === usage.model && model.contextWindow ? model.contextWindow : null;
+  const usedTokens = usage.inputTokens + usage.outputTokens;
+  if (!contextWindow) return { model: usage.model, contextWindow: null, usedTokens, tokensLeft: null, usedShare: null, messagesLeft: null };
+  const tokensLeft = Math.max(0, contextWindow - usedTokens);
+  const historyTokens = history.reduce((total, message) => total + estimateTokens(message.content), 0);
+  const perMessage = Math.max(50, history.length ? historyTokens / history.length : 0);
+  return {
+    model: usage.model,
+    contextWindow,
+    usedTokens,
+    tokensLeft,
+    usedShare: Math.min(1, usedTokens / contextWindow),
+    messagesLeft: Math.floor(tokensLeft / perMessage),
+  };
 }
 
 function base64ToBlob(data: string, mimeType: string): Blob {
@@ -85,6 +132,11 @@ export function useAssistantChat(options: UseAssistantChatOptions): UseAssistant
   const [messages, setMessages] = useState<ChatEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [quota, setQuota] = useState<QuotaSummary | null>(null);
+  const [answeredBy, setAnsweredBy] = useState<ModelInfo | null>(null);
+  const [nextModel, setNextModel] = useState<ModelInfo | null>(null);
+  const [context, setContext] = useState<ContextStatus | null>(null);
+  const answeredByRef = useRef<ModelInfo | null>(null);
+  const sentHistoryRef = useRef<ChatMessage[]>([]);
   const messagesRef = useRef<ChatEntry[]>([]);
   const optionsRef = useRef(options);
   const abortRef = useRef<AbortController | null>(null);
@@ -112,15 +164,22 @@ export function useAssistantChat(options: UseAssistantChatOptions): UseAssistant
       if (context !== undefined) url.searchParams.set('context', JSON.stringify(context));
       const headers = typeof optionsRef.current.headers === 'function' ? await optionsRef.current.headers() : optionsRef.current.headers;
       const response = await fetcher(url.toString(), { cache: 'no-store', credentials, headers });
-      const payload = response.ok ? await response.json() as { quota?: QuotaSummary | null } : null;
-      if (mountedRef.current) setQuota(payload?.quota ?? null);
+      const payload = response.ok ? await response.json() as { quota?: QuotaSummary | null; model?: ModelInfo | null } : null;
+      if (mountedRef.current) {
+        setQuota(payload?.quota ?? null);
+        setNextModel(payload?.model ?? null);
+      }
     } catch {
-      if (mountedRef.current) setQuota(null);
+      if (mountedRef.current) {
+        setQuota(null);
+        setNextModel(null);
+      }
     }
   }, []);
 
   useEffect(() => {
     setQuota(null);
+    setNextModel(null);
     void refreshQuota();
   }, [contextKey, options.usageApi, refreshQuota]);
 
@@ -140,6 +199,18 @@ export function useAssistantChat(options: UseAssistantChatOptions): UseAssistant
       case 'text':
         updateEntry(id, (entry) => ({ ...entry, content: entry.content + event.text, activeTool: undefined }));
         break;
+      case 'model': {
+        const { type: _type, ...info } = event;
+        answeredByRef.current = info;
+        if (mountedRef.current) setAnsweredBy(info);
+        updateEntry(id, (entry) => ({ ...entry, model: info }));
+        break;
+      }
+      case 'usage': {
+        const { type: _type, ...usage } = event;
+        if (mountedRef.current) setContext(contextStatus(usage, answeredByRef.current, sentHistoryRef.current));
+        break;
+      }
       case 'tool':
         updateEntry(id, (entry) => ({ ...entry, activeTool: event.name }));
         break;
@@ -228,6 +299,7 @@ export function useAssistantChat(options: UseAssistantChatOptions): UseAssistant
       ? { ...entry, confirmations: entry.confirmations.map((item) => (item.status === 'pending' ? { ...item, status: 'cancelled' } : item)) }
       : entry)));
     const history = historyOf([...messagesRef.current, { id: '', role: 'user', content: text, files: [], pending: false, confirmations: [] }]);
+    sentHistoryRef.current = history;
     const assistantId = randomId();
     update((current) => [
       ...current,
@@ -251,8 +323,9 @@ export function useAssistantChat(options: UseAssistantChatOptions): UseAssistant
     const proposal = entry.confirmations.find((item) => item.id === confirmationId)!;
     setConfirmationStatus(confirmationId, 'running');
     updateEntry(entry.id, (current) => ({ ...current, pending: true, error: undefined, stopped: undefined }));
+    sentHistoryRef.current = historyOf(messagesRef.current.slice(0, index + 1));
     const ok = await stream(entry.id, {
-      messages: historyOf(messagesRef.current.slice(0, index + 1)),
+      messages: sentHistoryRef.current,
       confirmation: { id: proposal.id, name: proposal.name, input: proposal.input, token: proposal.token },
     });
     setConfirmationStatus(confirmationId, ok ? 'done' : 'failed');
@@ -274,13 +347,16 @@ export function useAssistantChat(options: UseAssistantChatOptions): UseAssistant
     fileUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
     fileUrlsRef.current = [];
     messagesRef.current = [];
+    sentHistoryRef.current = [];
     setMessages([]);
     setBusy(false);
+    setContext(null);
   }, []);
 
+  const model = answeredBy ?? nextModel;
   return useMemo(
-    () => ({ messages, busy, send, stop, newChat, confirm, cancel, quota, refreshQuota }),
-    [messages, busy, send, stop, newChat, confirm, cancel, quota, refreshQuota],
+    () => ({ messages, busy, send, stop, newChat, confirm, cancel, quota, refreshQuota, model, context }),
+    [messages, busy, send, stop, newChat, confirm, cancel, quota, refreshQuota, model, context],
   );
 }
 
@@ -343,4 +419,4 @@ export function AssistantMarkdown({ text, components = {} }: { text: string; com
   return createElement(Fragment, null, blocks.map((item, index) => block(item, index, components)));
 }
 
-export type { AssistantErrorCode, AssistantEvent, ConfirmationRequest, QuotaSummary };
+export type { AssistantErrorCode, AssistantEvent, ConfirmationRequest, ModelInfo, QuotaSummary, UsageInfo };

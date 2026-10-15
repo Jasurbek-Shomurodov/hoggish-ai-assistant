@@ -1,6 +1,6 @@
 import { verifyConfirmation } from './confirm';
-import { ERROR_STATUS, encodeEvent, type AssistantErrorCode, type AssistantEvent } from './events';
-import { ChainExhaustedError, Cooldowns, fallbackReason, statusCode } from './fallback';
+import { ERROR_STATUS, encodeEvent, type AssistantErrorCode, type AssistantEvent, type ModelInfo } from './events';
+import { ChainExhaustedError, Cooldowns, fallbackReason, modelsToTry, statusCode } from './fallback';
 import { MAX_ROUNDS, runTurn } from './loop';
 import type { AssistantProvider } from './providers';
 import { exhaustedModels, quotaDate, summarizeQuota, trackedModels, type QuotaStore, type QuotaSummary, type RequestResult } from './quota';
@@ -55,10 +55,19 @@ export interface AssistantHandlerOptions<CTX> {
   onError?: (error: unknown, info: ErrorInfo) => void;
 }
 
+/** Body of the usage endpoint (GET). */
+export interface UsageResponse {
+  provider: string | null;
+  /** The model that would answer the next question; null when none is available. */
+  model: ModelInfo | null;
+  /** Null when the provider is not quota-tracked or usage cannot be read. */
+  quota: QuotaSummary | null;
+}
+
 export interface AssistantHandler {
   /** POST: one chat turn, streamed as NDJSON events. */
   chat(request: Request): Promise<Response>;
-  /** GET: `{ quota }` for quota-tracked providers, else `{ quota: null }`. */
+  /** GET: `{ provider, model, quota }`; `quota` is null for untracked providers. */
   usage(request: Request): Promise<Response>;
   /** Routes POST to `chat`, GET to `usage` and answers OPTIONS (for one Edge Function). */
   handle(request: Request): Promise<Response>;
@@ -137,6 +146,21 @@ export function createAssistantHandler<CTX>(options: AssistantHandlerOptions<CTX
       timeZone: provider.quotaTimeZone,
       requestsPerQuestion: options.requestsPerQuestion,
     });
+  }
+
+  /** The model the next question would go to: first in the chain that is neither used up nor cooling down. */
+  async function nextModel(provider: AssistantProvider): Promise<ModelInfo | null> {
+    if (!provider.configured) return null;
+    const rows = await loadQuota(provider, quotaDate(new Date(), provider.quotaTimeZone));
+    const skip = rows ? exhaustedModels(provider.models, rows) : [];
+    const entry = modelsToTry(provider.models, new Set(skip), cooldowns)[0];
+    if (!entry) return null;
+    const providerName = entry.provider ?? provider.name;
+    return {
+      model: entry.model,
+      ...(providerName ? { provider: providerName } : {}),
+      ...(entry.contextWindow ? { contextWindow: entry.contextWindow } : {}),
+    };
   }
 
   async function checkConfirmation(confirmation: ConfirmedCall, tools: AssistantTools): Promise<ConfirmedCall | AssistantErrorCode> {
@@ -263,10 +287,12 @@ export function createAssistantHandler<CTX>(options: AssistantHandlerOptions<CTX
     if (!access.ok) return access.response;
     try {
       const provider = await resolveProvider(access.ctx);
-      return json({ provider: provider.name, quota: await quota(provider) });
+      const body: UsageResponse = { provider: provider.name, model: await nextModel(provider), quota: await quota(provider) };
+      return json(body);
     } catch (error) {
       onError(error, { stage: 'quota' });
-      return json({ provider: null, quota: null });
+      const body: UsageResponse = { provider: null, model: null, quota: null };
+      return json(body);
     }
   }
 

@@ -31,6 +31,14 @@ describe('NDJSON events', () => {
     expect(events).toEqual([{ type: 'text', text: 'Привет, oʻzbek 👋' }, { type: 'done' }]);
   });
 
+  it('accepts model and usage events', () => {
+    const { events } = parseEventChunk('{"type":"model","model":"gemini-3.8-flash","provider":"gemini","contextWindow":1048576}\n{"type":"usage","model":"gemini-3.8-flash","inputTokens":120,"outputTokens":30}\n');
+    expect(events).toEqual([
+      { type: 'model', model: 'gemini-3.8-flash', provider: 'gemini', contextWindow: 1048576 },
+      { type: 'usage', model: 'gemini-3.8-flash', inputTokens: 120, outputTokens: 30 },
+    ]);
+  });
+
   it('recognises error codes', () => {
     expect(isAssistantErrorCode('BUSY')).toBe(true);
     expect(isAssistantErrorCode('busy')).toBe(false);

@@ -224,6 +224,12 @@ export async function runTurn(options: TurnOptions): Promise<void> {
           if (!accepted && RESPONSE_PARTS.has(part.type)) {
             accepted = true;
             options.onModelRequest?.(entry.model, 'ok');
+            send({
+              type: 'model',
+              model: entry.model,
+              ...(entry.provider ?? provider.name ? { provider: entry.provider ?? provider.name } : {}),
+              ...(entry.contextWindow ? { contextWindow: entry.contextWindow } : {}),
+            });
           }
           switch (part.type) {
             case 'text-delta':
@@ -238,6 +244,9 @@ export async function runTurn(options: TurnOptions): Promise<void> {
               break;
             case 'finish-step':
               finishReason = part.finishReason;
+              if (typeof part.usage.inputTokens === 'number') {
+                send({ type: 'usage', model: entry.model, inputTokens: part.usage.inputTokens, outputTokens: part.usage.outputTokens ?? 0 });
+              }
               break;
             case 'error':
               throw part.error;

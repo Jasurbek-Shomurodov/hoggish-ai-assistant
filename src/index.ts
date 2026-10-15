@@ -12,6 +12,8 @@ export {
   type AssistantErrorCode,
   type AssistantEvent,
   type ConfirmationRequest,
+  type ModelInfo,
+  type UsageInfo,
 } from './events';
 export {
   PACIFIC_TIME_ZONE,
@@ -32,6 +34,7 @@ export {
 } from './quota';
 export {
   DEFAULT_LIMITS,
+  estimateTokens,
   parseChatRequest,
   trimHistory,
   type ChatMessage,

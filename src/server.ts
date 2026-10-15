@@ -12,11 +12,14 @@ export {
   type AssistantHandlerOptions,
   type ErrorInfo,
   type ErrorStage,
+  type UsageResponse,
 } from './handler';
 export {
+  CONTEXT_WINDOWS,
   DEFAULT_CLAUDE_MODEL,
   GEMINI_FREE_MODELS,
   anthropicProvider,
+  contextWindowFor,
   customProvider,
   geminiProvider,
   providerChain,

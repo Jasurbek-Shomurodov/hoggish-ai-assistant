@@ -41,8 +41,27 @@ export interface ConfirmationRequest {
   token?: string;
 }
 
+/** The model answering a model call, sent when it accepts the call. */
+export interface ModelInfo {
+  /** Model id (`gemini-3.8-flash`, `claude-opus-5-5`, `backup/gemini-3.8-flash`…). */
+  model: string;
+  provider?: string;
+  /** Context window in tokens, when known. */
+  contextWindow?: number;
+}
+
+/** Token usage of one finished model call. */
+export interface UsageInfo {
+  model: string;
+  /** Prompt tokens of this call: system prompt, tools and the whole history. */
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export type AssistantEvent =
   | { type: 'text'; text: string }
+  | ({ type: 'model' } & ModelInfo)
+  | ({ type: 'usage' } & UsageInfo)
   | { type: 'tool'; name: string; id?: string }
   | { type: 'file'; fileName: string; mimeType: string; data: string }
   | ({ type: 'confirm' } & ConfirmationRequest)
@@ -53,7 +72,7 @@ export function isAssistantErrorCode(value: unknown): value is AssistantErrorCod
   return typeof value === 'string' && (ASSISTANT_ERROR_CODES as readonly string[]).includes(value);
 }
 
-const EVENT_TYPES = new Set(['text', 'tool', 'file', 'confirm', 'error', 'done']);
+const EVENT_TYPES = new Set(['text', 'model', 'usage', 'tool', 'file', 'confirm', 'error', 'done']);
 
 function isEvent(value: unknown): value is AssistantEvent {
   return typeof value === 'object' && value !== null && EVENT_TYPES.has((value as { type?: unknown }).type as string);
