@@ -491,8 +491,9 @@ npm install
 npm run check
 ```
 
-`npm run check` runs typecheck, tests and build. To release, bump `version`, run
-`npm run build`, commit `dist/`, tag `vX.Y.Z` and push the tag.
+`npm run check` runs typecheck, tests and build. To release, bump `version`, add a changelog
+entry, run `npm run build`, commit `dist/`, tag `vX.Y.Z` and push `main` and the tag. When working
+with Claude Code, Claude does these steps itself (see `CLAUDE.md`).
 
 ## License
 
