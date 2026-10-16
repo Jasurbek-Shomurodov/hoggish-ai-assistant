@@ -26,8 +26,19 @@ catalog alive per `review-core` section 6.
 1. Read the full diff. For each changed function, also read its callers and the tests that cover
    it (`test/*.test.ts`, helpers in `test/helpers.ts`).
 2. Check every item in the checklist below against the diff.
-3. Run `npm run typecheck` and `npm test`. Report failures verbatim.
-4. Report in the `review-core` section 3 skeleton (`CR: <target>`, commit, checks, findings as
+3. **Consumer impact.** For every export the diff adds, changes, renames or removes (anything
+   reachable from the six entry points, plus NDJSON event types and error codes), grep the two
+   consumer apps read-only for call sites and list them in the report under a "Consumer call
+   sites" heading (file:line per hit, or "none" per export):
+
+   ```bash
+   grep -rnwE --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.cjs' --exclude-dir={node_modules,dist,.next,output,tmp} "<export1>|<export2>" ~/Desktop/game-club-finance ~/Desktop/zar-kebab-pos
+   ```
+
+   A hit on a removed or renamed export, or on a changed signature, is S0 (breaking without a
+   major bump). Never edit the consumer repos from this skill.
+4. Run `npm run typecheck` and `npm test`. Report failures verbatim.
+5. Report in the `review-core` section 3 skeleton (`CR: <target>`, commit, checks, findings as
    `[S0|S1|S2]` with Scenario, Fix and Verified, then Suggestions, Checked not a finding, Not
    run). Skip anything you cannot tie to a scenario. Say plainly when nothing is wrong.
 
@@ -78,3 +89,10 @@ that `CHANGELOG.md` and `README.md` describe them.
 
 **Build.** `dist/` is committed and installed from Git tags. If `src/` changed, `dist/` must be
 rebuilt in the same change (`npm run build`), and `package.json` `exports` must list any new entry.
+
+**Guards.** Four rules above are automated; run them instead of checking by hand and quote
+failures: `test/portability.test.ts` (Web APIs only from the portable entries),
+`test/apiSnapshot.test.ts` with `test/api-snapshot.json` (public surface, event types, error
+codes), `scripts/check-dist.mjs` (`dist/` drift) and `scripts/release-check.mjs` (version, changelog,
+README tag, exports). CI (`.github/workflows/checks.yml`) runs all of them plus the React 18 and
+19 matrix.

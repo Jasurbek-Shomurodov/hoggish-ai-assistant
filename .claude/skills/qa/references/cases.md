@@ -37,11 +37,11 @@ through `test/helpers.ts`.
 
 | ID | Sev | Case | Check | Expect |
 |---|---|---|---|---|
-| REL-001 | S0 | `dist/` rebuilt with `src/` | `npm run build && git status --short dist` | Clean |
-| REL-002 | S0 | Version bumped and changelog entry present | `package.json` version vs `CHANGELOG.md` | Match |
-| REL-003 | S0 | README install snippet points at the new tag | `grep -n "#v" README.md` | Tag equals the version |
-| REL-004 | S0 | New entry points exported | `package.json` `exports` and `tsup.config.ts` | Every entry listed |
-| REL-005 | S0 | No `node:` or `Buffer` in core and server | `grep -rnE "node:\|\bBuffer\b" src/index.ts src/server.ts` and their imports | None |
+| REL-001 | S0 | `dist/` rebuilt with `src/` | `npm run check:dist` (`scripts/check-dist.mjs`) | Exit 0; guard: `scripts/check-dist.mjs` |
+| REL-002 | S0 | Version bumped and changelog entry present | `npm run release-check -- --release` | Exit 0; guard: `scripts/release-check.mjs` |
+| REL-003 | S0 | README install snippet points at the new tag | `npm run release-check -- --release` | Tag equals the version; guard: `scripts/release-check.mjs` |
+| REL-004 | S0 | New entry points exported | `npm run release-check` | Every `exports` entry has a tsup entry and a dist file; guard: `scripts/release-check.mjs` |
+| REL-005 | S0 | No `node:` or `Buffer` in core and server | `npx vitest run test/portability.test.ts` | Passes; guard: `test/portability.test.ts` walks the import graph |
 
 ## FB — fallback scenarios
 
@@ -114,3 +114,4 @@ through `test/helpers.ts`.
 | REACT-002 | S1 | Surfaces confirmations | Same file | Proposal in state |
 | REACT-003 | S1 | Handles abort and errors | Same file | Abort stops; error in state |
 | REACT-004 | S1 | Renders on React 18 and 19 APIs | Same file | Both pass |
+| REL-006 | S0 | Public surface unchanged unless intended | `npx vitest run test/apiSnapshot.test.ts` | Passes, or the snapshot was updated on purpose and a removed or renamed name came with a major bump; guard: `test/apiSnapshot.test.ts` [qa 2026-10-16] |

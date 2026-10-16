@@ -50,7 +50,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run check:dist && npm run build && npm run release-check",
+    "check:dist": "node scripts/check-dist.mjs",
+    "release-check": "node scripts/release-check.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.80",

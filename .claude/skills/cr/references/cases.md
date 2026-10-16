@@ -19,7 +19,7 @@ renumber. `[cr YYYY-MM-DD]` marks a case added from a finding in that run;
 
 | ID | Sev | Case | Check | Expect |
 |---|---|---|---|---|
-| RT-001 | S0 | No Node built-ins in the core and server entries | `grep -rnE "from 'node:\|require\('node:\|\bBuffer\b\|process\." src/index.ts src/server.ts src/handler.ts src/loop.ts src/fallback.ts src/quota.ts src/tools.ts src/confirm.ts src/events.ts src/request.ts src/providers.ts src/supabase.ts` | No hit; only `fetch`, Web Crypto, `TextEncoder`, `btoa` |
+| RT-001 | S0 | No Node built-ins in the core and server entries (guard: `test/portability.test.ts`) | `grep -rnE "from 'node:\|require\('node:\|\bBuffer\b\|process\." src/index.ts src/server.ts src/handler.ts src/loop.ts src/fallback.ts src/quota.ts src/tools.ts src/confirm.ts src/events.ts src/request.ts src/providers.ts src/supabase.ts` | No hit; only `fetch`, Web Crypto, `TextEncoder`, `btoa` |
 | RT-002 | S0 | Node-only code stays in `src/excel.ts` | `grep -rn "excel" src/index.ts src/server.ts` | Neither entry imports `excel.ts` |
 | RT-003 | S0 | React code stays in `src/react.tsx` | `grep -rn "from 'react'" src --include=*.ts` | No hit outside `react.tsx` |
 | RT-004 | S1 | A new entry is wired everywhere | `grep -n "exports" -A30 package.json` and `tsup.config.ts` | Every entry in `package.json` `exports`, `tsup.config.ts` and the README table |
@@ -81,10 +81,13 @@ renumber. `[cr YYYY-MM-DD]` marks a case added from a finding in that run;
 
 | ID | Sev | Case | Check | Expect |
 |---|---|---|---|---|
-| API-001 | S0 | Breaking change has a major bump | Diff exports of `src/index.ts`, `server.ts`, `react.tsx`, `markdown.ts`, `excel.ts`, `supabase.ts` | Removed or changed signatures → major version |
+| API-001 | S0 | Breaking change has a major bump (guard: `test/apiSnapshot.test.ts`) | Diff exports of `src/index.ts`, `server.ts`, `react.tsx`, `markdown.ts`, `excel.ts`, `supabase.ts` | Removed or changed signatures → major version |
 | API-002 | S1 | `CHANGELOG.md` and `README.md` describe public changes | `git diff -- CHANGELOG.md README.md` | Entry present for every public change |
 | API-003 | S1 | Surface minimal and consistent | Compare new exports with `createAssistantHandler`, `defineTool`, providers, `useAssistantChat` | Options on existing functions preferred |
 | API-004 | S2 | Consumer apps still build | Read `scripts/update-hoggish-assistant.cjs` in the two consumer repos | Install path unchanged |
+| API-005 | S0 | Removed or renamed export still called by a consumer app | `grep -rnwE --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.cjs' --exclude-dir={node_modules,dist,.next,output,tmp} "<export1>\|<export2>" ~/Desktop/game-club-finance ~/Desktop/zar-kebab-pos` for each removed or renamed export | No hit, or the change ships with a major bump and the consumer call sites are listed in the report [cr 2026-10-16] |
+| API-006 | S1 | Changed signature or event shape used by a consumer app | Same grep for each export whose parameters, return type or event fields changed; read each hit | Every call site still compiles against the new shape, listed under "Consumer call sites" [cr 2026-10-16] |
+| API-007 | S2 | Consumer call sites listed for every changed export | Report has a "Consumer call sites" section | One line per export: file:line hits or "none" [cr 2026-10-16] |
 
 ## MD — markdown
 
@@ -106,6 +109,7 @@ renumber. `[cr YYYY-MM-DD]` marks a case added from a finding in that run;
 
 | ID | Sev | Case | Check | Expect |
 |---|---|---|---|---|
-| BUILD-001 | S0 | `dist/` matches `src/` | `npm run build && git status --short dist` | No diff after build |
+| BUILD-001 | S0 | `dist/` matches `src/` | `npm run check:dist` | Exit 0; guard: `scripts/check-dist.mjs` |
 | BUILD-002 | S1 | `npm run check` passes | `npm run check` | Typecheck, tests and build green |
-| BUILD-003 | S1 | Version bumped with a changelog entry when tagging | `package.json` version vs `CHANGELOG.md` top entry | Match; README install snippet points at the tag |
+| BUILD-003 | S1 | Version bumped with a changelog entry when tagging | `npm run release-check -- --release` | Exit 0; guard: `scripts/release-check.mjs` |
+| BUILD-004 | S1 | CI green | `gh run list --limit 3` after pushing | Latest `checks` run on `main` succeeded; guard: `.github/workflows/checks.yml` [cr 2026-10-16] |

@@ -5,8 +5,10 @@ tool loop, NDJSON streaming). See `README.md` for the public API.
 
 ## Commands
 
-- `npm run check`: typecheck, tests and build. Run it before every commit.
+- `npm run check`: typecheck, tests, dist drift guard, build and release check. Run it before every commit.
 - `npm test`: vitest only.
+- `npm run check:dist`: fails when the committed `dist/` differs from a fresh build (`scripts/check-dist.mjs`).
+- `npm run release-check -- --release`: the release checklist as a script (`scripts/release-check.mjs`).
 
 ## Rules
 
@@ -16,6 +18,10 @@ tool loop, NDJSON streaming). See `README.md` for the public API.
   Node built-ins there; Node-only code lives in `src/excel.ts`.
 - Prompts, messages, tool inputs and tool results must never reach logs or error payloads
   (`test/logging.test.ts` guards this).
+- Guards: `test/portability.test.ts` (Web APIs only from the portable entries), `test/apiSnapshot.test.ts`
+  with `test/api-snapshot.json` (public exports, NDJSON event types, error codes; a removed or renamed
+  name is a major bump; update on purpose with `UPDATE_API_SNAPSHOT=1 npm test`), `scripts/check-dist.mjs`
+  and `scripts/release-check.mjs`. CI runs them all in `.github/workflows/checks.yml` on React 18 and 19.
 
 ## Releasing: Claude does it, every time
 
@@ -24,7 +30,7 @@ run these steps themselves.
 
 1. Bump `version` in `package.json` (patch for fixes, minor for features), add a `CHANGELOG.md`
    entry, and point the README install snippet at the new tag.
-2. `npm run check`, then commit everything including `dist/`.
+2. `npm run check` and `npm run release-check -- --release`, then commit everything including `dist/`.
 3. Tag `vX.Y.Z` and push `main` and the tag.
 
 Pushing: the repo is `Jasurbek-Shomurodov/hoggish-ai-assistant`; `origin` is the SSH alias

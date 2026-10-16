@@ -46,12 +46,21 @@ cases; `retest` starts from the top row of the catalog run log. Keep the catalog
 3. **Run the scenario list** below for the areas the change touches. Each scenario is a test
    case; if it is not already covered, write it.
 
-4. **Release checklist** (when the user is committing, tagging or bumping the version):
-   - `dist/` rebuilt and committed together with `src/` (`git status` shows no stale `dist/`).
-   - `package.json` version bumped and `CHANGELOG.md` has an entry for it.
-   - README install snippet points at the new tag.
-   - New entry points are in `package.json` `exports` and `tsup.config.ts`.
-   - No `node:` or `Buffer` usage in `src/index.ts`, `src/server.ts` or their imports.
+4. **Release checklist** (when the user is committing, tagging or bumping the version). One
+   command checks the whole list; paste its output verbatim:
+
+   ```bash
+   npm run release-check -- --release
+   ```
+
+   `scripts/release-check.mjs` verifies that the `package.json` version is above the last Git tag,
+   `CHANGELOG.md` has an entry for it, the README install snippet points at the new tag, every
+   `package.json` `exports` entry has a `tsup.config.ts` entry and a `dist/` file, and `dist/` is
+   not stale (`scripts/check-dist.mjs`). Without `--release` the same script runs inside
+   `npm run check` and only requires the version to be at least the last tag. The Web-API-only rule
+   for the core and server entries is guarded by `test/portability.test.ts`, the public surface by
+   `test/apiSnapshot.test.ts` (snapshot in `test/api-snapshot.json`; a removed or renamed export
+   needs a major bump).
 
 5. **Report** in the `review-core` section 3 skeleton: `QA: <scope>`, commit, a Checks table of
    the three commands and their result (failures quoted), then findings as `[S0|S1|S2]` with

@@ -25,9 +25,18 @@ the catalog alive per `review-core` section 6.
 1. Restate the proposal in two or three sentences so the user can correct a misreading.
 2. Read the parts of the codebase the change touches. Start from `README.md` (the public contract),
    then the relevant `src/` files and their tests.
-3. Answer each question under "Design questions". Where the proposal is silent, state the default
+3. **Consumer impact.** For every export the proposal adds, changes, renames or removes (and every
+   NDJSON event type or error code it touches), grep the two consumer apps read-only for call
+   sites and list them in the review under a "Consumer call sites" heading (file:line per hit, or
+   "none"). A proposal that breaks a listed call site without a major bump is S0.
+
+   ```bash
+   grep -rnwE --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.cjs' --exclude-dir={node_modules,dist,.next,output,tmp} "<export1>|<export2>" ~/Desktop/game-club-finance ~/Desktop/zar-kebab-pos
+   ```
+
+4. Answer each question under "Design questions". Where the proposal is silent, state the default
    you would choose.
-4. Finish in the `review-core` section 3 shape: `DR: <proposal>`, a one-line verdict, risks as
+5. Finish in the `review-core` section 3 shape: `DR: <proposal>`, a one-line verdict, risks as
    `[S0|S1|S2]` findings with Scenario, Fix and Verified, then the recommended approach, what
    tests and docs the change needs, "Checked, not a finding" and "Not run". Keep it under about
    400 words unless the user asks for more.
@@ -74,4 +83,7 @@ or `AssistantProvider` with an in-memory implementation for tests?
 without network access? What new test file or cases are needed?
 
 **Docs and release.** Which README sections and which `CHANGELOG.md` entry does it need?
-Does `dist/` need a rebuild and a new Git tag?
+Does `dist/` need a rebuild and a new Git tag? Which guards will the change trip, and is that
+intended: `test/apiSnapshot.test.ts` (snapshot update, major bump if a name goes away),
+`test/portability.test.ts` (no Node APIs from the portable entries), `scripts/release-check.mjs`
+(version, changelog, README tag, exports)?

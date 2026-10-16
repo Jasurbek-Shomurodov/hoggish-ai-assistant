@@ -27,7 +27,7 @@ never renumber. `[dr YYYY-MM-DD]` marks a case added from a finding in that run.
 | ID | Sev | Case | Check | Expect |
 |---|---|---|---|---|
 | ENTRY-001 | S0 | Correct entry chosen | Which of `hoggish-assistant`, `/server`, `/react`, `/markdown`, `/excel`, `/supabase` gets it? | Matches the runtime the code needs |
-| ENTRY-002 | S0 | Runtime promise kept | Does the code need `node:` or `Buffer`? | Core and server stay Web-API only; Node-only goes to `/excel` |
+| ENTRY-002 | S0 | Runtime promise kept (guard: `test/portability.test.ts`) | Does the code need `node:` or `Buffer`? | Core and server stay Web-API only; Node-only goes to `/excel` |
 | ENTRY-003 | S1 | New entry fully wired | Does the proposal list `package.json` `exports`, `tsup.config.ts` and a README row? | All three named |
 
 ## API — public surface
@@ -35,9 +35,12 @@ never renumber. `[dr YYYY-MM-DD]` marks a case added from a finding in that run.
 | ID | Sev | Case | Check | Expect |
 |---|---|---|---|---|
 | API-001 | S1 | Minimal surface | Could it be an option on `createAssistantHandler`, `defineTool`, a provider or `useAssistantChat`? | Option preferred over a new function |
-| API-002 | S0 | Breaking change identified | Does any export change signature or disappear? | Flagged with a major bump or redesigned to be additive |
+| API-002 | S0 | Breaking change identified (guard: `test/apiSnapshot.test.ts`) | Does any export change signature or disappear? | Flagged with a major bump or redesigned to be additive |
 | API-003 | S1 | Consistent naming | Compare with existing export names | Same verb-noun style and option shapes |
 | API-004 | S2 | Worth a major bump | If breaking, is the gain stated? | Justification present |
+| API-005 | S0 | Consumer call sites of a removed or renamed export | `grep -rnwE --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.cjs' --exclude-dir={node_modules,dist,.next,output,tmp} "<export1>\|<export2>" ~/Desktop/game-club-finance ~/Desktop/zar-kebab-pos` for each export the proposal removes or renames | No hit, or the proposal plans a major bump and names each call site [dr 2026-10-16] |
+| API-006 | S1 | Consumer call sites of a changed signature or event shape | Same grep for each changed export, event type or error code | Each call site named with how it adapts [dr 2026-10-16] |
+| API-007 | S2 | Consumer call sites listed | Review has a "Consumer call sites" section | One line per touched export: hits or "none" [dr 2026-10-16] |
 
 ## STREAM — streaming contract
 
