@@ -1,12 +1,19 @@
 ---
 name: dr
 description: Design review for hoggish-assistant. Use before implementing a new feature, public API, provider, store or event type in this repo (/dr, "design review", "how should we add X", "review this plan"). Produces a written assessment of the proposed design with risks and a recommendation; does not write code.
+argument-hint: "[proposal text | diff | current plan]"
 ---
 
 # Design review (dr)
 
+> **Shared contract.** Load the `review-core` skill first (`~/.claude/skills/review-core/SKILL.md`). Its ground rules, argument
+> grammar, S0/S1/S2 severity scale, report skeleton, fix mode and fan-out
+> apply here. This file adds only what is specific to the hoggish-assistant library (an API design review, not a visual one).
+
 Assess a proposed change before it is built. The proposal is `$ARGUMENTS`, the current plan, or
-the user's description. Output is a short written review, not code.
+the user's description; `diff` (from the `review-core` grammar) means the API changes on the
+current branch against `main`, reviewed as if they were the proposal. Output is a short written
+review, not code. `review-core` section 0 applies (read-only, no secrets, no network).
 
 ## Steps
 
@@ -15,8 +22,16 @@ the user's description. Output is a short written review, not code.
    then the relevant `src/` files and their tests.
 3. Answer each question under "Design questions". Where the proposal is silent, state the default
    you would choose.
-4. Finish with: risks ranked by impact, the recommended approach, and what tests and docs the
-   change needs. Keep it under about 400 words unless the user asks for more.
+4. Finish in the `review-core` section 3 shape: `DR: <proposal>`, a one-line verdict, risks as
+   `[S0|S1|S2]` findings with Scenario, Fix and Verified, then the recommended approach, what
+   tests and docs the change needs, "Checked, not a finding" and "Not run". Keep it under about
+   400 words unless the user asks for more.
+
+   Severity here: **S0** = a privacy leak path, a side effect that can bypass confirmation, a
+   breaking change for the two consumer apps (game-club-finance and zar-kebab-pos pull this
+   library through `scripts/update-hoggish-assistant.cjs`) without a major bump, or a runtime
+   promise broken. **S1** = an inconsistent or non-minimal public surface, a new event older
+   clients cannot ignore, storage or a provider without an interface. **S2** = naming and docs.
 
 ## Design questions
 

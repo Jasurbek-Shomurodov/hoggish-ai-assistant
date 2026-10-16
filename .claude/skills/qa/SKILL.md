@@ -1,12 +1,19 @@
 ---
 name: qa
 description: QA pass for hoggish-assistant. Use before committing, tagging a release, or when asked to test or verify a change (/qa, "run the checks", "is this ready to ship", "add tests for"). Runs typecheck, tests and build, checks test coverage of the change and the release checklist, and reports what passed and what did not.
+argument-hint: "[empty = full | diff | path | PR number | A..B]"
 ---
 
 # QA (qa)
 
-Verify a change end to end and report faithfully. The scope is `$ARGUMENTS` if given, otherwise
-the current branch's changes against `main` and the working tree.
+> **Shared contract.** Load the `review-core` skill first (`~/.claude/skills/review-core/SKILL.md`). Its ground rules, argument
+> grammar, S0/S1/S2 severity scale, report skeleton, fix mode and fan-out
+> apply here. This file adds only what is specific to the hoggish-assistant library.
+
+Verify a change end to end and report faithfully. Scope: `$ARGUMENTS` (grammar in `review-core`
+section 1). Empty or `full` means every entry point and every scenario below; `diff` means the
+current branch's changes against `main` plus the working tree; a path, PR number or commit range
+narrows it. Adding missing tests is part of this skill and needs no `fix`; changing `src/` does.
 
 ## Steps
 
@@ -41,8 +48,14 @@ the current branch's changes against `main` and the working tree.
    - New entry points are in `package.json` `exports` and `tsup.config.ts`.
    - No `node:` or `Buffer` usage in `src/index.ts`, `src/server.ts` or their imports.
 
-5. **Report.** A table of the three commands and their result, then the coverage gaps you found
-   and what you added, then any release checklist items that are not met.
+5. **Report** in the `review-core` section 3 skeleton: `QA: <scope>`, commit, a Checks table of
+   the three commands and their result (failures quoted), then findings as `[S0|S1|S2]` with
+   Scenario, Fix and Verified, then the coverage gaps you found and what you added, then
+   "Checked, not a finding" and "Not run".
+
+   Severity here: **S0** = a failing check, a privacy-guard gap, or a release checklist item not
+   met when tagging. **S1** = a changed function with no behavioural test, or a scenario below
+   that is not covered. **S2** = test quality (implementation-detail assertions, duplication).
 
 ## Test patterns in this repo
 

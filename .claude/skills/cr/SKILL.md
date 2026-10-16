@@ -1,13 +1,20 @@
 ---
 name: cr
-description: Code review for hoggish-assistant. Use when asked to review a diff, branch, PR or file in this repo (/cr, "review this", "code review"). Reports correctness, privacy and API-contract problems ranked by severity; does not edit code.
+description: Code review for hoggish-assistant. Use when asked to review a diff, branch, PR or file in this repo (/cr, "review this", "code review"). Reports correctness, privacy and API-contract problems ranked S0/S1/S2 in the review-core format; edits only with "fix".
+argument-hint: "[empty = full | diff | PR number | branch | A..B | path] [fix]"
 ---
 
 # Code review (cr)
 
-Review the target for bugs, not style. The target is `$ARGUMENTS` if given (a PR number, branch,
-commit range or path); otherwise the working tree diff against `main`
-(`git diff main...HEAD` plus uncommitted changes).
+> **Shared contract.** Load the `review-core` skill first (`~/.claude/skills/review-core/SKILL.md`). Its ground rules, argument
+> grammar, S0/S1/S2 severity scale, report skeleton, fix mode and fan-out
+> apply here. This file adds only what is specific to the hoggish-assistant library.
+
+Review the target for bugs, not style. Target: `$ARGUMENTS` (grammar in `review-core`
+section 1). Empty or `full` means every file under `src/` and `test/`, checked against the whole
+checklist below; `diff` means the current branch against `main` (`git diff main...HEAD`) plus
+uncommitted changes; a PR number, branch, commit range or path as in `review-core`. With `fix`,
+apply the confirmed fixes afterwards (`review-core` section 4) and finish with `npm run check`.
 
 ## Steps
 
@@ -15,9 +22,16 @@ commit range or path); otherwise the working tree diff against `main`
    it (`test/*.test.ts`, helpers in `test/helpers.ts`).
 2. Check every item in the checklist below against the diff.
 3. Run `npm run typecheck` and `npm test`. Report failures verbatim.
-4. Report findings ranked most severe first. For each: file and line, the defect in one sentence,
-   and a concrete failure scenario (input or state, then wrong result). Skip anything you cannot
-   tie to a scenario. Say plainly when nothing is wrong.
+4. Report in the `review-core` section 3 skeleton (`CR: <target>`, commit, checks, findings as
+   `[S0|S1|S2]` with Scenario, Fix and Verified, then Suggestions, Checked not a finding, Not
+   run). Skip anything you cannot tie to a scenario. Say plainly when nothing is wrong.
+
+   Severity here: **S0** = prompt, message or tool text reaching logs or error payloads, a tool
+   running without a verified confirmation, a `node:` or `Buffer` dependency reachable from the
+   core or server entry, a breaking public API or NDJSON change without a major bump, or `dist/`
+   out of date with `src/`. **S1** = a fallback, quota or request-limit rule from the checklist
+   broken, or a public change missing from `CHANGELOG.md` and `README.md`. **S2** = everything
+   else that costs maintenance.
 
 ## Checklist (specific to this library)
 
