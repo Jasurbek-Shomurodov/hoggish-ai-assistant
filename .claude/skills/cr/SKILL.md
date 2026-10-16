@@ -1,7 +1,7 @@
 ---
 name: cr
-description: Code review for hoggish-assistant. Use when asked to review a diff, branch, PR or file in this repo (/cr, "review this", "code review"). Reports correctness, privacy and API-contract problems ranked S0/S1/S2 in the review-core format; edits only with "fix".
-argument-hint: "[empty = full | diff | PR number | branch | A..B | path] [fix]"
+description: Code review for hoggish-assistant. Use when asked to review a diff, branch, PR or file in this repo (/cr, "review this", "code review"). Reports correctness, privacy and API-contract problems ranked S0/S1/S2 in the review-core format; edits only with "fix". Arguments: empty or "full", "diff", a PR number, a branch, "A..B", a path, or an area code (RT, PRIV, FB, QUOTA, TOOL, EVT, API, MD, REACT, BUILD).
+argument-hint: "[empty = full | diff | PR number | branch | A..B | path | area code (RT, PRIV, FB, QUOTA, TOOL, EVT, API, MD, REACT, BUILD)] [fix]"
 ---
 
 # Code review (cr)
@@ -15,6 +15,11 @@ section 1). Empty or `full` means every file under `src/` and `test/`, checked a
 checklist below; `diff` means the current branch against `main` (`git diff main...HEAD`) plus
 uncommitted changes; a PR number, branch, commit range or path as in `review-core`. With `fix`,
 apply the confirmed fixes afterwards (`review-core` section 4) and finish with `npm run check`.
+
+Sources of truth: `CLAUDE.md` (the rules), `README.md` (the public contract) and
+`references/cases.md`, the code regression catalog. Every case there has a Check and an
+Expect; an area code as the target runs that area's cases across `src/` and `test/`. Keep the
+catalog alive per `review-core` section 6.
 
 ## Steps
 

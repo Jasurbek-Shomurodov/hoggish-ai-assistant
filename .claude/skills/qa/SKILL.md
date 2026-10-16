@@ -1,7 +1,7 @@
 ---
 name: qa
-description: QA pass for hoggish-assistant. Use before committing, tagging a release, or when asked to test or verify a change (/qa, "run the checks", "is this ready to ship", "add tests for"). Runs typecheck, tests and build, checks test coverage of the change and the release checklist, and reports what passed and what did not.
-argument-hint: "[empty = full | diff | path | PR number | A..B]"
+description: QA pass for hoggish-assistant. Use before committing, tagging a release, or when asked to test or verify a change (/qa, "run the checks", "is this ready to ship", "add tests for"). Runs typecheck, tests and build, checks test coverage of the change and the release checklist, and reports what passed and what did not. Arguments: empty or "full", "diff", a path, a PR number, "A..B", or an area code (CHK, COV, REL, FB, QUOTA, HND, CONF, REQ, MD, XL, REACT).
+argument-hint: "[empty = full | diff | path | PR number | A..B | area code (CHK, COV, REL, FB, QUOTA, HND, CONF, REQ, MD, XL, REACT)]"
 ---
 
 # QA (qa)
@@ -14,6 +14,11 @@ Verify a change end to end and report faithfully. Scope: `$ARGUMENTS` (grammar i
 section 1). Empty or `full` means every entry point and every scenario below; `diff` means the
 current branch's changes against `main` plus the working tree; a path, PR number or commit range
 narrows it. Adding missing tests is part of this skill and needs no `fix`; changing `src/` does.
+
+Sources of truth: `CLAUDE.md` (the rules), `README.md` (the promised behaviour) and
+`references/cases.md`, the QA regression catalog. An area code as the target runs that area's
+cases; `retest` starts from the top row of the catalog run log. Keep the catalog alive per
+`review-core` section 6.
 
 ## Steps
 

@@ -1,7 +1,7 @@
 ---
 name: dr
-description: Design review for hoggish-assistant. Use before implementing a new feature, public API, provider, store or event type in this repo (/dr, "design review", "how should we add X", "review this plan"). Produces a written assessment of the proposed design with risks and a recommendation; does not write code.
-argument-hint: "[proposal text | diff | current plan]"
+description: Design review for hoggish-assistant. Use before implementing a new feature, public API, provider, store or event type in this repo (/dr, "design review", "how should we add X", "review this plan"). Produces a written assessment of the proposed design with risks and a recommendation; does not write code. Arguments: proposal text, "diff", the current plan, or an area code (FIT, ENTRY, API, STREAM, FB, CONF, PRIV, PLUG, TEST, DOCS).
+argument-hint: "[proposal text | diff | current plan | area code (FIT, ENTRY, API, STREAM, FB, CONF, PRIV, PLUG, TEST, DOCS)]"
 ---
 
 # Design review (dr)
@@ -14,6 +14,11 @@ Assess a proposed change before it is built. The proposal is `$ARGUMENTS`, the c
 the user's description; `diff` (from the `review-core` grammar) means the API changes on the
 current branch against `main`, reviewed as if they were the proposal. Output is a short written
 review, not code. `review-core` section 0 applies (read-only, no secrets, no network).
+
+Sources of truth: `CLAUDE.md` (the rules), `README.md` (the public contract) and
+`references/cases.md`, the design regression catalog, where each design question below is a
+check with an expected answer. An area code as the target answers that area's cases only. Keep
+the catalog alive per `review-core` section 6.
 
 ## Steps
 
